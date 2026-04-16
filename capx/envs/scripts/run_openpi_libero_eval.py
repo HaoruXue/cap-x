@@ -177,4 +177,4 @@ def run(args: Args) -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    tyro.cli(run)
+    run(tyro.cli(Args))
