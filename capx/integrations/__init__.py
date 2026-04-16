@@ -15,9 +15,9 @@ from .franka.handover_reduced_exampleless import FrankaHandoverApiReducedExample
 from .franka.two_arm_lift import FrankaTwoArmLiftApi
 from .franka.two_arm_lift_privileged import FrankaTwoArmLiftPrivilegedApi
 try:
-    from .franka.libero import FrankaLiberoApi
+    from .franka.libero import FrankaLiberoApi, FrankaLiberoVLAApi, FrankaLiberoVLANoSam3Api
     from .franka.libero_privileged import FrankaLiberoPrivilegedApi
-    from .franka.libero_reduced import FrankaLiberoApiReduced
+    from .franka.libero_reduced import FrankaLiberoApiReduced, FrankaLiberoVLAApiReduced
     from .franka.libero_reduced_skill_library import FrankaLiberoApiReducedSkillLibrary
     _libero_available = True
 except ImportError:
@@ -125,5 +125,9 @@ except ImportError:
 if _libero_available:
     register_api("FrankaLiberoPrivilegedApi", FrankaLiberoPrivilegedApi)
     register_api("FrankaLiberoApi", lambda env: FrankaLiberoApi(env, use_sam3=True))
+    register_api("FrankaLiberoNoSam3Api", lambda env: FrankaLiberoApi(env, use_sam3=False))
+    register_api("FrankaLiberoVLAApi", lambda env: FrankaLiberoVLAApi(env, use_sam3=True))
+    register_api("FrankaLiberoVLANoSam3Api", lambda env: FrankaLiberoVLANoSam3Api(env, use_sam3=False))
     register_api("FrankaLiberoApiReduced", FrankaLiberoApiReduced)
+    register_api("FrankaLiberoVLAApiReduced", FrankaLiberoVLAApiReduced)
     register_api("FrankaLiberoApiReducedSkillLibrary", FrankaLiberoApiReducedSkillLibrary)

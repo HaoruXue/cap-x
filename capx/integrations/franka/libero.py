@@ -12,6 +12,7 @@ from capx.envs.base import (
     BaseEnv,
 )
 from capx.integrations.base_api import ApiBase
+from capx.integrations.franka.openpi_tooling import FrankaLiberoOpenPIToolMixin
 from capx.integrations.vision.graspnet import init_contact_graspnet, init_contact_graspnet_point_clouds
 from capx.integrations.vision.molmo import init_molmo
 from capx.integrations.vision.sam2 import init_sam2_point_prompt
@@ -24,13 +25,7 @@ from capx.utils.depth_utils import (
     depth_to_rgb,
 )
 from capx.integrations.motion.pyroki import init_pyroki
-from capx.utils.openpi import (
-    DEFAULT_OPENPI_HOST,
-    DEFAULT_OPENPI_PORT,
-    OpenPIWebsocketClient,
-    apply_libero_delta_action,
-    build_openpi_libero_input,
-)
+from capx.utils.openpi import OpenPIWebsocketClient
 
 _curobo_api = None
 
@@ -44,7 +39,7 @@ def _get_curobo_api():
 from sklearn.cluster import DBSCAN
 
 # ------------------------------- Control API ------------------------------
-class FrankaLiberoApi(ApiBase):
+class FrankaLiberoApi(FrankaLiberoOpenPIToolMixin, ApiBase):
     """Robot control helpers for Franka.
     """
 
@@ -83,6 +78,10 @@ class FrankaLiberoApi(ApiBase):
     def functions(self) -> dict[str, Any]:
         fns =  {
             "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
             "get_object_pose": self.get_object_pose,
             "sample_grasp_pose": self.sample_grasp_pose,
             "goto_pose": self.goto_pose,
@@ -122,109 +121,6 @@ class FrankaLiberoApi(ApiBase):
         obs[self.camera_name]["images"]["depth"] = obs[self.camera_name]["images"]["depth"].squeeze(-1)
         obs[self.wrist_camera_name]["images"]["depth"] = obs[self.wrist_camera_name]["images"]["depth"].squeeze(-1)
         return obs
-
-    def _get_openpi_client(
-        self,
-        host: str = DEFAULT_OPENPI_HOST,
-        port: int = DEFAULT_OPENPI_PORT,
-    ) -> OpenPIWebsocketClient:
-        endpoint = (host, port)
-        if self._openpi_client is None or self._openpi_client_endpoint != endpoint:
-            if self._openpi_client is not None:
-                self._openpi_client.close()
-            self._openpi_client = OpenPIWebsocketClient(host=host, port=port)
-            self._openpi_client_endpoint = endpoint
-        return self._openpi_client
-
-    def get_openpi_action_chunk(
-        self,
-        replan_steps: int = 5,
-        resize_size: int = 224,
-        prompt: str | None = None,
-        host: str = DEFAULT_OPENPI_HOST,
-        port: int = DEFAULT_OPENPI_PORT,
-    ) -> np.ndarray:
-        """Query an upstream OpenPI LIBERO policy server for the next raw action chunk.
-
-        This returns the native OpenPI/LIBERO actions: XYZ delta, axis-angle delta,
-        and gripper command. Use this when you want OpenPI's direct policy suggestion
-        from the current camera observations and robot state.
-
-        Args:
-            replan_steps: Number of actions to keep from the predicted chunk.
-            resize_size: Square image size used for OpenPI preprocessing. Default is 224.
-            prompt: Optional task instruction override. Defaults to the current LIBERO task language.
-            host: Host of the OpenPI websocket server.
-            port: Port of the OpenPI websocket server.
-
-        Returns:
-            action_chunk: Array of shape (replan_steps, 7) containing raw OpenPI actions.
-        """
-        obs = self.get_observation()
-        raw_obs = getattr(self._env, "_current_obs", None)
-        task_prompt = prompt or getattr(self._env.handle, "task_language", "")
-        payload = build_openpi_libero_input(
-            obs,
-            prompt=task_prompt,
-            raw_libero_obs=raw_obs,
-            resize_size=resize_size,
-        )
-        response = self._get_openpi_client(host=host, port=port).infer(payload)
-        actions = np.asarray(response["actions"], dtype=np.float64)
-        if actions.ndim != 2 or actions.shape[1] < 7:
-            raise ValueError(f"Unexpected OpenPI action chunk shape: {actions.shape}")
-        return actions[:replan_steps, :7]
-
-    def get_openpi_subgoal(
-        self,
-        resize_size: int = 224,
-        prompt: str | None = None,
-        host: str = DEFAULT_OPENPI_HOST,
-        port: int = DEFAULT_OPENPI_PORT,
-        translation_scale: float = 1.0,
-        rotation_scale: float = 1.0,
-    ) -> dict[str, Any]:
-        """Convert OpenPI's next raw action into an approximate Cartesian subgoal.
-
-        This is an approximation layer for CaP-X's joint-position-controlled LIBERO wrapper.
-        It uses the first OpenPI delta action and maps it onto the current end-effector pose.
-
-        Args:
-            resize_size: Square image size used for OpenPI preprocessing. Default is 224.
-            prompt: Optional task instruction override. Defaults to the current LIBERO task language.
-            host: Host of the OpenPI websocket server.
-            port: Port of the OpenPI websocket server.
-            translation_scale: Multiplier applied to the XYZ delta before composing the subgoal.
-            rotation_scale: Multiplier applied to the axis-angle delta before composing the subgoal.
-
-        Returns:
-            dict with:
-                - "position": (3,) target XYZ in meters.
-                - "quaternion_wxyz": (4,) target orientation.
-                - "gripper_action": scalar OpenPI gripper command.
-                - "raw_action": (7,) raw OpenPI action used to form the subgoal.
-        """
-        action = self.get_openpi_action_chunk(
-            replan_steps=1,
-            resize_size=resize_size,
-            prompt=prompt,
-            host=host,
-            port=port,
-        )[0]
-        robot_cartesian_pos = np.asarray(self._env.get_observation()["robot_cartesian_pos"], dtype=np.float64)
-        position, quaternion_wxyz, gripper_action = apply_libero_delta_action(
-            robot_cartesian_pos[:3],
-            robot_cartesian_pos[3:7],
-            action,
-            translation_scale=translation_scale,
-            rotation_scale=rotation_scale,
-        )
-        return {
-            "position": position,
-            "quaternion_wxyz": quaternion_wxyz,
-            "gripper_action": gripper_action,
-            "raw_action": action,
-        }
 
     def segment_sam3_point_prompt(
         self,
@@ -1181,3 +1077,45 @@ class FrankaLiberoApi(ApiBase):
             **kwargs,
         )
         return success, joint_traj
+
+
+class FrankaLiberoVLAApi(FrankaLiberoApi):
+    """VLA-forward LIBERO API that prioritizes the OpenPI tool surface in prompts."""
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
+            "goto_pose": self.goto_pose,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+            "goto_home_joint_position": self.goto_home_joint_position,
+            "get_object_pose": self.get_object_pose,
+            "sample_grasp_pose": self.sample_grasp_pose,
+            "get_oriented_bounding_box_from_3d_points": self.get_oriented_bounding_box_from_3d_points,
+            "get_object_3d_points_and_masks_from_language": self.get_object_3d_points_and_masks_from_language,
+        }
+
+
+class FrankaLiberoVLANoSam3Api(FrankaLiberoApi):
+    """No-SAM3 LIBERO VLA API that exposes only OpenPI and motion primitives."""
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
+            "goto_pose": self.goto_pose,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+            "goto_home_joint_position": self.goto_home_joint_position,
+        }

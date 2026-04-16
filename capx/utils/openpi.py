@@ -23,7 +23,7 @@ def _convert_to_uint8(image: np.ndarray) -> np.ndarray:
     array = np.asarray(image)
     if np.issubdtype(array.dtype, np.floating):
         array = np.clip(array * 255.0, 0.0, 255.0).astype(np.uint8)
-    return array
+    return np.ascontiguousarray(array, dtype=np.uint8)
 
 
 def _resize_with_pad(image: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -67,8 +67,8 @@ def build_openpi_libero_input(
     resize_size: int = 224,
 ) -> dict[str, Any]:
     """Convert a CaP-X or raw LIBERO observation into the upstream OpenPI LIBERO input contract."""
-    base_rgb = np.asarray(obs["agentview"]["images"]["rgb"])[:, ::-1]
-    wrist_rgb = np.asarray(obs["robot0_eye_in_hand"]["images"]["rgb"])[:, ::-1]
+    base_rgb = np.ascontiguousarray(np.asarray(obs["agentview"]["images"]["rgb"])[:, ::-1])
+    wrist_rgb = np.ascontiguousarray(np.asarray(obs["robot0_eye_in_hand"]["images"]["rgb"])[:, ::-1])
     base_rgb = _resize_with_pad(base_rgb, resize_size, resize_size)
     wrist_rgb = _resize_with_pad(wrist_rgb, resize_size, resize_size)
 
@@ -87,8 +87,11 @@ def build_openpi_libero_input(
         state = np.concatenate([eef_pos, _quat_xyzw_to_axis_angle(eef_quat_xyzw), gripper])
 
     return {
-        "observation/image": base_rgb,
-        "observation/wrist_image": wrist_rgb,
+        # Use plain Python lists for request payloads. The OpenPI server converts these
+        # back to ndarrays internally and this avoids msgpack ndarray compatibility edge-cases
+        # we observed between CaP-X and the upstream websocket server.
+        "observation/image": base_rgb.tolist(),
+        "observation/wrist_image": wrist_rgb.tolist(),
         "observation/state": state.astype(np.float32),
         "prompt": str(prompt),
     }

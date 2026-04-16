@@ -124,6 +124,14 @@ The wrapper:
 - Waits for `http://127.0.0.1:<port>/healthz` before reporting readiness
 - Forwards SIGINT and SIGTERM so shutdown behaves like the other CaP-X launchers
 
+When a LIBERO config uses `FrankaLiberoApi`, `FrankaLiberoApiReduced`, `FrankaLiberoVLAApi`, or `FrankaLiberoVLAApiReduced`, the coding agent can treat OpenPI as a first-class tool instead of only reading raw action chunks. The main tool-facing helpers are:
+- `get_openpi_server_info(...)` to verify which OpenPI endpoint is active
+- `plan_with_openpi(...)` to lift the VLA action chunk into Cartesian subgoals
+- `execute_openpi_step(...)` to query OpenPI and execute a single interpreted subgoal
+- `execute_openpi_plan(...)` to execute a short OpenPI-guided sequence through CaP-X's own IK / motion stack
+
+See `env_configs/libero/franka_libero_object_swap_vla_eval.yaml` for a VLA-forward LIBERO-PRO example config.
+
 ## Adding new LLM providers
 
 CaP-X queries language models through a local proxy server that exposes an OpenAI-compatible `/chat/completions` endpoint.

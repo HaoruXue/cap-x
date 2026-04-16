@@ -156,6 +156,8 @@ uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --po
 
 This is separate from the LLM proxy path above: OpenPI exposes a websocket robot-policy server with `GET /healthz`, not an OpenAI-compatible `/chat/completions` endpoint.
 
+With the LIBERO APIs, OpenPI can also be used as a first-class CaP-X tool via `plan_with_openpi(...)`, `execute_openpi_step(...)`, and `execute_openpi_plan(...)` instead of only exposing raw action chunks.
+
 ### 3. Run evaluation
 
 ```bash
@@ -174,6 +176,15 @@ source .venv-libero/bin/activate
 uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/libero/franka_libero_spatial_0.yaml \
     --model "google/gemini-3.1-pro-preview"
+
+# LIBERO-PRO: VLA-forward CaP-X eval with OpenPI available as a tool
+source .venv-libero/bin/activate
+uv run --no-sync --active capx/envs/launch.py \
+    --config-path env_configs/libero/franka_libero_object_swap_vla_eval.yaml \
+    --model "<openrouter-model-id>" \
+    --server-url http://127.0.0.1:8110/chat/completions \
+    --total-trials 5 \
+    --num-workers 1
 
 # BEHAVIOR: R1Pro radio pickup (20 trials) — requires b1k venv
 source capx/third_party/b1k/.venv/bin/activate
