@@ -86,6 +86,44 @@ uv run --no-sync --active capx/serving/launch_servers.py --profile default
 | `full` | default + OWL-ViT (8118) + SAM2 (8113) | Yes (~14 GB VRAM) |
 | `minimal` | PyRoKi (8116) only | No (CPU-only) |
 
+### OpenPI policy server
+
+CaP-X can also launch an upstream [OpenPI](https://github.com/Physical-Intelligence/openpi) websocket policy server through a thin wrapper in `capx/serving`.
+
+This is a separate policy-serving path from the OpenAI-compatible LLM proxies below:
+- OpenPI serves robot actions over websocket plus `GET /healthz`
+- OpenRouter/vLLM serve LLM generations over `POST /chat/completions`
+
+Set up OpenPI in its own checkout first:
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi
+uv sync
+```
+
+Then launch it through CaP-X:
+
+```bash
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --port 8000
+```
+
+To serve a custom checkpoint instead of a built-in OpenPI environment preset:
+
+```bash
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py \
+    --policy-config pi05_libero \
+    --policy-dir gs://openpi-assets/checkpoints/pi05_libero \
+    --port 8000
+```
+
+The wrapper:
+- Runs OpenPI in the OpenPI project environment via `uv run --project`
+- Waits for `http://127.0.0.1:<port>/healthz` before reporting readiness
+- Forwards SIGINT and SIGTERM so shutdown behaves like the other CaP-X launchers
+
 ## Adding new LLM providers
 
 CaP-X queries language models through a local proxy server that exposes an OpenAI-compatible `/chat/completions` endpoint.

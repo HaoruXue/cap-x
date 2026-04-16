@@ -142,6 +142,20 @@ uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrout
 
 See [docs/configuration.md](docs/configuration.md) for all provider options (OpenRouter, vLLM, custom).
 
+### Optional: OpenPI policy server
+
+CaP-X also includes an OpenPI launcher for cases where you want to run an upstream OpenPI websocket policy server alongside the rest of the repo tooling.
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi && uv sync
+
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --port 8000
+```
+
+This is separate from the LLM proxy path above: OpenPI exposes a websocket robot-policy server with `GET /healthz`, not an OpenAI-compatible `/chat/completions` endpoint.
+
 ### 3. Run evaluation
 
 ```bash
