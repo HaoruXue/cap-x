@@ -156,6 +156,20 @@ OpenRouter provides access to Gemini, GPT, Claude, DeepSeek, Qwen, and other mod
 uv run python -m capx.serving.vllm_server --model Qwen/Qwen2.5-Coder-7B-Instruct --port 8080 --tensor-parallel-size 4
 ```
 
+For Molmo2-backed pointing used by some LIBERO perception flows:
+
+```bash
+CUDA_VISIBLE_DEVICES=7 uv run --no-sync --active python -m capx.serving.vllm_server \
+  --model allenai/Molmo2-8B \
+  --host 127.0.0.1 \
+  --port 8122 \
+  --tensor-parallel-size 1 \
+  --gpu-memory-utilization 0.55 \
+  --max-model-len 4096 \
+  --max-num-batched-tokens 8192 \
+  --trust-remote-code
+```
+
 ### Option C: Custom providers
 
 Providers live under `capx/serving/providers/` and implement a simple `generate_code` method. Extend to Gemini/Claude/Bedrock by adding new provider classes.

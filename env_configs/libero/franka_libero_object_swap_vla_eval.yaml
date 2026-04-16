@@ -16,7 +16,7 @@ env:
       task_id: 0
     privileged: false
     apis:
-      - FrankaLiberoVLANoSam3Api
+      - FrankaLiberoVLAApi
     prompt: |
       You are controlling a Franka Emika robot with the API described below.
       Goal: {libero_environment_goal}
@@ -43,6 +43,8 @@ env:
       {console_stderr}
       ```
       If there were no errors during compilation or execution, the console stderr will be empty. If there were errors, consider regenerating the code.
+      Do not respond with `FINISH` unless the task is clearly complete.
+      If the robot has only made partial progress, or you have not explicitly verified placement / task completion, continue with another code block.
       Please respond with EXACTLY ONE of the following:
       - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
       - The word 'FINISH' if the task appears to be complete
@@ -56,6 +58,11 @@ api_servers:
 
   - _target_: capx.serving.launch_contact_graspnet_server.main
     port: 8115
+    host: 127.0.0.1
+
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
     host: 127.0.0.1
 
 record_video: true

@@ -104,6 +104,7 @@ See [docs/behavior-tasks.md](docs/behavior-tasks.md) for task details and expect
 uv sync --extra verl             # RL training with VeRL/GRPO
 uv sync --extra contactgraspnet  # Contact-GraspNet grasp planning
 uv sync --extra curobo           # cuRobo GPU-accelerated IK & motion planning (requires CUDA)
+uv sync --extra molmo            # Molmo2 pointing server for object-centric perception
 ```
 
 ## Quick Start
@@ -157,6 +158,22 @@ uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --po
 This is separate from the LLM proxy path above: OpenPI exposes a websocket robot-policy server with `GET /healthz`, not an OpenAI-compatible `/chat/completions` endpoint.
 
 With the LIBERO APIs, OpenPI can also be used as a first-class CaP-X tool via `plan_with_openpi(...)`, `execute_openpi_step(...)`, and `execute_openpi_plan(...)` instead of only exposing raw action chunks.
+
+LIBERO object-centric perception can also depend on a Molmo2 pointing server on `127.0.0.1:8122`.
+Run that from the base `.venv` because the `molmo` extra is kept separate from `.venv-libero`:
+
+```bash
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=7 uv run --no-sync --active python -m capx.serving.vllm_server \
+    --model allenai/Molmo2-8B \
+    --host 127.0.0.1 \
+    --port 8122 \
+    --tensor-parallel-size 1 \
+    --gpu-memory-utilization 0.55 \
+    --max-model-len 4096 \
+    --max-num-batched-tokens 8192 \
+    --trust-remote-code
+```
 
 ### 3. Run evaluation
 

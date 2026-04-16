@@ -3,6 +3,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from threading import Lock
 from typing import Any
+import os
+import pickle
+import subprocess
+import tempfile
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -30,7 +35,7 @@ def _resize_with_pad(image: np.ndarray, height: int, width: int) -> np.ndarray:
     pil_image = Image.fromarray(_convert_to_uint8(image))
     cur_width, cur_height = pil_image.size
     if (cur_height, cur_width) == (height, width):
-        return np.asarray(pil_image)
+        return np.array(pil_image, copy=True)
 
     ratio = max(cur_width / width, cur_height / height)
     resized_width = int(cur_width / ratio)
@@ -41,7 +46,7 @@ def _resize_with_pad(image: np.ndarray, height: int, width: int) -> np.ndarray:
     pad_x = max(0, (width - resized_width) // 2)
     pad_y = max(0, (height - resized_height) // 2)
     canvas.paste(resized, (pad_x, pad_y))
-    return np.asarray(canvas)
+    return np.array(canvas, copy=True)
 
 
 def _quat_xyzw_to_axis_angle(quat_xyzw: np.ndarray) -> np.ndarray:
@@ -87,11 +92,8 @@ def build_openpi_libero_input(
         state = np.concatenate([eef_pos, _quat_xyzw_to_axis_angle(eef_quat_xyzw), gripper])
 
     return {
-        # Use plain Python lists for request payloads. The OpenPI server converts these
-        # back to ndarrays internally and this avoids msgpack ndarray compatibility edge-cases
-        # we observed between CaP-X and the upstream websocket server.
-        "observation/image": base_rgb.tolist(),
-        "observation/wrist_image": wrist_rgb.tolist(),
+        "observation/image": base_rgb,
+        "observation/wrist_image": wrist_rgb,
         "observation/state": state.astype(np.float32),
         "prompt": str(prompt),
     }
@@ -132,6 +134,8 @@ class OpenPIWebsocketClient:
         api_key: str | None = None,
         uri: str | None = None,
     ) -> None:
+        self._host = host
+        self._port = port
         if uri is not None:
             self._uri = uri
         elif host.startswith("ws://") or host.startswith("wss://"):
@@ -143,6 +147,7 @@ class OpenPIWebsocketClient:
         self._lock = Lock()
         self._ws = None
         self._metadata: dict[str, Any] | None = None
+        self._prefer_helper = False
 
     def _connect(self) -> None:
         headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
@@ -167,6 +172,9 @@ class OpenPIWebsocketClient:
         return self._metadata or {}
 
     def infer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._prefer_helper:
+            return self._infer_via_helper_or_raise(payload, "helper preferred after prior websocket failure")
+
         with self._lock:
             if self._ws is None:
                 self._connect()
@@ -174,7 +182,7 @@ class OpenPIWebsocketClient:
                 assert self._ws is not None
                 self._ws.send(self._packer.pack(payload))
                 response = self._ws.recv()
-            except Exception:
+            except Exception as exc:
                 if self._ws is not None:
                     try:
                         self._ws.close()
@@ -182,14 +190,93 @@ class OpenPIWebsocketClient:
                         pass
                 self._ws = None
                 self._metadata = None
+                fallback = self._infer_via_helper(payload, str(exc))
+                if fallback is not None:
+                    return fallback
                 raise
 
         if isinstance(response, str):
+            fallback = self._infer_via_helper(payload, response)
+            if fallback is not None:
+                return fallback
             raise RuntimeError(f"OpenPI server returned an error:\n{response}")
         data = _msgpack_numpy.unpackb(response)
         if not isinstance(data, dict):
             raise TypeError(f"Expected dict response from OpenPI server, got {type(data)!r}")
         return data
+
+    def _infer_via_helper(
+        self,
+        payload: dict[str, Any],
+        error_text: str,
+        *,
+        force: bool = False,
+    ) -> dict[str, Any] | None:
+        helper_python = self._resolve_helper_python()
+        if helper_python is None:
+            return None
+
+        helper_script = Path(__file__).with_name("openpi_client_helper.py")
+        if not helper_script.exists():
+            return None
+
+        # Only use the helper on the known websocket/msgpack interoperability failure path.
+        if not force and not any(
+            token in error_text
+            for token in (
+                "_parse_image",
+                "IndexError: tuple index out of range",
+                "ConnectionClosedError",
+                "received 1011",
+                "Internal server error",
+            )
+        ):
+            return None
+
+        with tempfile.TemporaryDirectory(prefix="openpi_helper_") as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            payload_path = tmpdir_path / "payload.pkl"
+            output_path = tmpdir_path / "output.pkl"
+            payload_path.write_bytes(pickle.dumps(payload))
+
+            cmd = [
+                helper_python,
+                str(helper_script),
+                "--host",
+                self._host,
+                "--port",
+                str(self._port),
+                "--payload",
+                str(payload_path),
+                "--output",
+                str(output_path),
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            result = pickle.loads(output_path.read_bytes())
+            if not isinstance(result, dict):
+                raise TypeError(f"Expected dict result from OpenPI helper, got {type(result)!r}")
+            self._prefer_helper = True
+            return result
+
+    def _infer_via_helper_or_raise(self, payload: dict[str, Any], error_text: str) -> dict[str, Any]:
+        result = self._infer_via_helper(payload, error_text, force=True)
+        if result is None:
+            raise RuntimeError(f"OpenPI helper path unavailable while handling: {error_text}")
+        return result
+
+    def _resolve_helper_python(self) -> str | None:
+        if helper_python := os.getenv("OPENPI_CLIENT_PYTHON"):
+            return helper_python
+
+        candidates: list[Path] = []
+        if openpi_root := os.getenv("OPENPI_ROOT"):
+            candidates.append(Path(openpi_root).expanduser() / ".venv" / "bin" / "python")
+        candidates.append(Path("/tmp/openpi/.venv/bin/python"))
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return None
 
     def close(self) -> None:
         with self._lock:
