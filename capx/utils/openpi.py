@@ -4,11 +4,15 @@ from collections.abc import Sequence
 from threading import Lock
 from typing import Any
 
-import msgpack_numpy
 import numpy as np
 from PIL import Image
 from scipy.spatial.transform import Rotation as SciRotation
 import websockets.sync.client
+
+try:
+    from openpi_client import msgpack_numpy as _msgpack_numpy
+except ImportError:  # pragma: no cover - fallback for envs without openpi-client
+    import msgpack_numpy as _msgpack_numpy
 
 
 DEFAULT_OPENPI_HOST = "127.0.0.1"
@@ -132,7 +136,7 @@ class OpenPIWebsocketClient:
         else:
             self._uri = f"ws://{host}:{port}"
         self._api_key = api_key
-        self._packer = msgpack_numpy.Packer()
+        self._packer = _msgpack_numpy.Packer()
         self._lock = Lock()
         self._ws = None
         self._metadata: dict[str, Any] | None = None
@@ -144,11 +148,14 @@ class OpenPIWebsocketClient:
             compression=None,
             max_size=None,
             additional_headers=headers,
+            open_timeout=120,
+            ping_interval=None,
+            ping_timeout=None,
         )
         metadata = self._ws.recv()
         if isinstance(metadata, str):
             raise RuntimeError(f"OpenPI server returned a string during handshake: {metadata}")
-        self._metadata = msgpack_numpy.unpackb(metadata)
+        self._metadata = _msgpack_numpy.unpackb(metadata)
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -176,7 +183,7 @@ class OpenPIWebsocketClient:
 
         if isinstance(response, str):
             raise RuntimeError(f"OpenPI server returned an error:\n{response}")
-        data = msgpack_numpy.unpackb(response)
+        data = _msgpack_numpy.unpackb(response)
         if not isinstance(data, dict):
             raise TypeError(f"Expected dict response from OpenPI server, got {type(data)!r}")
         return data
