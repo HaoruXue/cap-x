@@ -130,7 +130,16 @@ def load_libero_task(
         if not os.path.exists(init_states_path):
              here = os.path.dirname(os.path.abspath(__file__))
              fallback_init_root = os.path.abspath(
-                os.path.join(here, "..", "third_party", "LIBERO-PRO", "libero", "libero", "init_files")
+                os.path.join(
+                    here,
+                    "..",
+                    "..",
+                    "third_party",
+                    "LIBERO-PRO",
+                    "libero",
+                    "libero",
+                    "init_files",
+                )
              )
              fallback_init_path = os.path.join(fallback_init_root, task.problem_folder, task.init_states_file)
 
