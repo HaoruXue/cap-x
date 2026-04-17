@@ -48,6 +48,7 @@ dependencies = [
   "mediapy>=1.2.5",
   "uvicorn",
   "fastapi",
+  "websockets>=15",
   "transformers",
   "openai",
   "pyrender",

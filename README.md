@@ -142,6 +142,22 @@ uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrout
 
 See [docs/configuration.md](docs/configuration.md) for all provider options (OpenRouter, vLLM, custom).
 
+### Optional: OpenPI policy server
+
+Run the upstream OpenPI websocket policy server alongside CaP-X when you want the coding agent to call OpenPI as a tool.
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi
+uv sync
+
+uv run scripts/serve_policy.py --env LIBERO --port 8000
+```
+
+This is separate from the LLM proxy path above: OpenPI exposes a websocket robot-policy server with `GET /healthz`, not an OpenAI-compatible `/chat/completions` endpoint.
+
+With the LIBERO VLA-reduced API, OpenPI is exposed through `plan_with_openpi(...)`, `execute_openpi_step(...)`, and `execute_openpi_plan(...)`.
+
 ### 3. Run evaluation
 
 ```bash
@@ -160,6 +176,15 @@ source .venv-libero/bin/activate
 uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/libero/franka_libero_spatial_0.yaml \
     --model "google/gemini-3.1-pro-preview"
+
+# LIBERO-PRO: VLA-forward CaP-X eval with OpenPI available as a tool
+source .venv-libero/bin/activate
+uv run --no-sync --active capx/envs/launch.py \
+    --config-path env_configs/libero/franka_libero_object_swap_vla_eval.yaml \
+    --model "<openrouter-model-id>" \
+    --server-url http://127.0.0.1:8110/chat/completions \
+    --total-trials 5 \
+    --num-workers 1
 
 # BEHAVIOR: R1Pro radio pickup (20 trials) — requires b1k venv
 source capx/third_party/b1k/.venv/bin/activate

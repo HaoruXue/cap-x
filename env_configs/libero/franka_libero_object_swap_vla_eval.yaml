@@ -1,0 +1,71 @@
+# LIBERO-PRO object-swap task 0 with OpenPI exposed as a tool through a standalone reduced API.
+# Safe locally-backed PRO suite to start with in this checkout.
+# Requires:
+#   1. source .venv-libero/bin/activate
+#   2. uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrouterkey --port 8110
+#   3. Start upstream OpenPI separately, for example:
+#        cd /path/to/openpi
+#        uv run scripts/serve_policy.py --env LIBERO --port 8000
+#   4. uv run --no-sync --active capx/envs/launch.py --config-path env_configs/libero/franka_libero_object_swap_vla_eval.yaml
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 0
+    privileged: false
+    apis:
+      - FrankaLiberoVLAApiReduced
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+      Prefer the built-in OpenPI VLA tool as your default action policy for short-horizon LIBERO-style manipulation:
+      - `plan_with_openpi(...)` previews OpenPI's short-horizon Cartesian subgoals.
+      - `execute_openpi_step(...)` queries OpenPI and executes one interpreted subgoal.
+      - `execute_openpi_plan(...)` can execute a short sequence when the path is obviously safe.
+      OpenPI was trained on LIBERO task-language instructions and usually works best for short-horizon motions that resemble standard LIBERO behaviors.
+      For OpenPI calls, prefer the exact LIBERO goal string above. Usually omit `prompt=` so the tool uses the environment goal automatically.
+      OpenPI may fail on long-horizon plans or LIBERO-PRO variations. When that happens, switch to the available motion primitives for recovery and verification.
+      Use OpenPI to make progress, then verify state and intelligently mix it with other primitives rather than assuming the VLA alone will finish the task.
+      You may write python code comments for reasoning but ONLY write the executable Python code and do not write it in code fences.
+      After this code executes, you will be able to get a new observation of the environment and write new code to complete the task if needed.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      If there were no errors during compilation or execution, the console stderr will be empty. If there were errors, consider regenerating the code.
+      OpenPI progress on one subgoal does not imply the task is complete.
+      If placement, release, or final task completion has not been explicitly achieved or verified, continue with another code block.
+      Do not respond with `FINISH` unless the task is clearly complete.
+      If the robot has only made partial progress, or you have not explicitly verified placement / task completion, continue with another code block.
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+record_video: true
+output_dir: ./outputs/franka_libero_object_swap_vla_eval
+save_multiturn_prompts: true
+
+trials: 20
+num_workers: 4

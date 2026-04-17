@@ -18,7 +18,7 @@ from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
 
 here = os.path.dirname(os.path.abspath(__file__))
-vendor_root = os.path.normpath(os.path.join(here, "..", "third_party", "LIBERO"))
+vendor_root = os.path.normpath(os.path.join(here, "..", "..", "third_party", "LIBERO-PRO"))
 if os.path.isdir(vendor_root) and vendor_root not in sys.path:
     sys.path.append(vendor_root)
 # try:
