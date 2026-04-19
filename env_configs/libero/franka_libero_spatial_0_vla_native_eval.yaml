@@ -1,0 +1,92 @@
+# Standard LIBERO spatial task 0 with native OpenPI exposed as a CaP-X tool.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_spatial
+      task_id: 0
+      privileged: false
+      max_steps: 4000
+      control_freq: 20
+      seed: 7
+    privileged: false
+    apis:
+      - FrankaLiberoVLAApiReduced
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+
+      OpenPI is trained on LIBERO task-language instructions. If you use OpenPI, preserve the exact goal string above.
+      Do not paraphrase it into shorter prompts. Usually omit `prompt=` entirely so the tool uses the exact current LIBERO goal.
+
+      `execute_openpi_native_step()` is the closest match to upstream OpenPI evaluation because it runs one raw OpenPI delta action on a synced native LIBERO controller.
+      Use OpenPI as a short-horizon prior, not as a substitute for all reasoning.
+
+      Preferred strategy:
+      - Start from a safe state with `goto_home_joint_position()` and `open_gripper()`, then re-observe.
+      - If the gripper is open and the robot is above the table, try exactly one `execute_openpi_native_step()` first.
+      - Re-observe immediately after that native OpenPI step.
+      - If the task is not complete, either take one more native OpenPI step if it clearly improved progress, or switch to explicit perception / motion primitives.
+      - Do not paraphrase the goal in later turns if you call OpenPI again.
+
+      You may write python code comments for reasoning but ONLY write executable Python code and do not write it in code fences.
+      After this code executes, you will be able to get a new observation of the environment and write new code to complete the task if needed.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      Goal: {libero_environment_goal}
+
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      Task status after that execution:
+      - reward: {reward}
+      - task_completed: {task_completed}
+      - terminated: {terminated}
+      - truncated: {truncated}
+
+      If `task_completed` is false, default to `REGENERATE`.
+      Only respond with `FINISH` if `task_completed` is true or the object is clearly placed correctly.
+      If a native OpenPI step did not help, stop repeating it and switch to explicit perception / motion primitives.
+
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/franka_libero_spatial_0_vla_native_eval
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 1
+num_workers: 1

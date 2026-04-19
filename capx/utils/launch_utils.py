@@ -34,12 +34,18 @@ from capx.llm.client import (  # noqa: F401
     VLM_MODELS,
     ModelQueryArgs,
     _completions_to_responses_convert_prompt,
+    canonicalize_model_id,
     collapse_text_image_inputs,
+    is_claude_model,
+    is_gpt_model,
+    is_oss_model,
     is_openrouter_model,
+    is_vlm_model,
     query_model as _query_model,
     query_model_streaming as _query_model_streaming,
     query_model_ensemble as _query_model_ensemble,
     query_single_model_ensemble as _query_single_model_ensemble,
+    resolve_server_url,
 )
 
 if TYPE_CHECKING:
@@ -105,7 +111,7 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
     # (CLI args take priority; YAML fills in when CLI uses defaults)
     _CLI_DEFAULTS = {
         "server_url": "http://127.0.0.1:8110/chat/completions",
-        "visual_differencing_model": "google/gemini-3.1-pro-preview",
+        "visual_differencing_model": "gcp/google/gemini-3.1-pro-preview",
         "visual_differencing_model_server_url": "http://127.0.0.1:8110/chat/completions",
         "visual_differencing_model_api_key": None,
     }
@@ -157,6 +163,7 @@ def _load_config(args: LaunchArgs) -> tuple[Any, dict[str, Any], list]:
         if getattr(args, "web_ui_port", None) is not None
         else configs_dict.get("web_ui_port", 8200),
         "save_multiturn_prompts": configs_dict.get("save_multiturn_prompts", False),
+        "oracle_code": configs_dict.get("oracle_code", None),
     }
 
     return env_factory, merged_config, api_servers

@@ -232,6 +232,7 @@ uv run --no-sync --active capx/envs/launch.py \
 | [Adding Environments](docs/adding-environments.md) | Creating simulators, task environments, YAML configs |
 | [Adding APIs](docs/adding-apis.md) | Implementing and registering new robot control APIs |
 | [Configuration](docs/configuration.md) | YAML format, CLI flags, LLM provider setup |
+| [Hybrid VLA Notes](docs/hybrid.md) | What worked for combined CaP-X + OpenPI, prompt guidance, launch recipes, and failure modes |
 | [LIBERO / OpenPI Migration Playbook](docs/libero-openpi-playbook.md) | Machine setup, service launch order, alignment checks, experiment recipes, operational notes |
 | [LIBERO-PRO Tasks](docs/libero-tasks.md) | Setup, running any of 130+ LIBERO tasks, suite reference |
 | [BEHAVIOR Tasks](docs/behavior-tasks.md) | Setup, R1Pro tasks, expected baselines, environment variables |

@@ -140,7 +140,7 @@ def analyze_failures(sorted_results: dict[int, TrialData]) -> str:
     """
     client = OpenAI(base_url=_LLM_BASE_URL, api_key=_LLM_API_KEY)
     completion = client.chat.completions.create(
-        model="google/gemini-3.1-pro-preview",
+        model="gcp/google/gemini-3.1-pro-preview",
         messages=[{"role": "user", "content": prompt}],
     )
     return completion.choices[0].message.content
@@ -162,7 +162,7 @@ def analyze_highlights(sorted_results: dict[int, TrialData]) -> str:
     """
     client = OpenAI(base_url=_LLM_BASE_URL, api_key=_LLM_API_KEY)
     completion = client.chat.completions.create(
-        model="google/gemini-3.1-pro-preview",
+        model="gcp/google/gemini-3.1-pro-preview",
         messages=[{"role": "user", "content": prompt}],
     )
     return completion.choices[0].message.content

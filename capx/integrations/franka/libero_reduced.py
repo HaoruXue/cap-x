@@ -90,7 +90,12 @@ class FrankaLiberoApiReduced(FrankaLiberoOpenPIToolMixin, ApiBase):
         fns["get_observation"] = self.get_observation
         fns["get_openpi_server_info"] = self.get_openpi_server_info
         fns["plan_with_openpi"] = self.plan_with_openpi
+        fns["get_openpi_native_action_chunk"] = self.get_openpi_native_action_chunk
+        fns["plan_with_openpi_native"] = self.plan_with_openpi_native
         fns["execute_openpi_step"] = self.execute_openpi_step
+        fns["execute_openpi_raw_action"] = self.execute_openpi_raw_action
+        fns["execute_openpi_native_step"] = self.execute_openpi_native_step
+        fns["execute_openpi_native_plan"] = self.execute_openpi_native_plan
         fns["execute_openpi_plan"] = self.execute_openpi_plan
         fns["segment_sam3_text_prompt"] = self.segment_sam3_text_prompt
         fns["segment_sam3_point_prompt"] = self.segment_sam3_point_prompt
@@ -912,7 +917,12 @@ class FrankaLiberoVLAApiReduced(FrankaLiberoApiReduced):
             "get_observation": self.get_observation,
             "get_openpi_server_info": self.get_openpi_server_info,
             "plan_with_openpi": self.plan_with_openpi,
+            "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            "plan_with_openpi_native": self.plan_with_openpi_native,
             "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_raw_action": self.execute_openpi_raw_action,
+            "execute_openpi_native_step": self.execute_openpi_native_step,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
             "execute_openpi_plan": self.execute_openpi_plan,
             "get_openpi_action_chunk": self.get_openpi_action_chunk,
             "get_openpi_subgoal": self.get_openpi_subgoal,

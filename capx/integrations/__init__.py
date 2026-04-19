@@ -18,7 +18,10 @@ try:
     from .franka.libero import FrankaLiberoApi, FrankaLiberoVLAApi, FrankaLiberoVLANoSam3Api
     from .franka.libero_privileged import FrankaLiberoPrivilegedApi
     from .franka.libero_reduced import FrankaLiberoApiReduced, FrankaLiberoVLAApiReduced
-    from .franka.libero_reduced_skill_library import FrankaLiberoApiReducedSkillLibrary
+    from .franka.libero_reduced_skill_library import (
+        FrankaLiberoApiReducedSkillLibrary,
+        FrankaLiberoApiReducedSkillLibraryNoVLA,
+    )
     _libero_available = True
 except ImportError:
     _libero_available = False
@@ -131,3 +134,4 @@ if _libero_available:
     register_api("FrankaLiberoApiReduced", FrankaLiberoApiReduced)
     register_api("FrankaLiberoVLAApiReduced", FrankaLiberoVLAApiReduced)
     register_api("FrankaLiberoApiReducedSkillLibrary", FrankaLiberoApiReducedSkillLibrary)
+    register_api("FrankaLiberoApiReducedSkillLibraryNoVLA", FrankaLiberoApiReducedSkillLibraryNoVLA)

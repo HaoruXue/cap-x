@@ -19,9 +19,15 @@ class LiberoHandle:
     def reset(self, seed: int | None = None) -> tuple[Any, dict[str, Any]]:
         self.env.seed(seed)
         obs = self.env.reset()
-        if self.init_states is not None:
-            self.env.set_init_state(self.init_states[0])
         return obs, {}
+
+    def set_init_state(self, init_state: Any) -> Any:
+        return self.env.set_init_state(init_state)
+
+    def set_init_state_for_index(self, index: int) -> Any:
+        if self.init_states is None:
+            raise RuntimeError("Init states are unavailable for this LIBERO task.")
+        return self.env.set_init_state(self.init_states[index])
 
     def step(self, action: list[float]) -> tuple[Any, float, bool, dict[str, Any]]:
         obs, reward, done, info = self.env.step(action)

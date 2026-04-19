@@ -191,6 +191,51 @@ class FrankaLiberoOpenPIToolMixin:
         )
         return trimmed
 
+    def get_openpi_native_action_chunk(
+        self,
+        replan_steps: int = 5,
+        resize_size: int = 224,
+        prompt: str | None = None,
+        host: str = DEFAULT_OPENPI_HOST,
+        port: int = DEFAULT_OPENPI_PORT,
+        sync_from_primary: bool = False,
+    ) -> np.ndarray:
+        """Query OpenPI using the native OSC_POSE LIBERO env observation contract."""
+        get_native_raw_obs = getattr(self._env, "get_openpi_native_raw_obs", None)
+        if get_native_raw_obs is None:
+            raise RuntimeError("Current environment does not support native OpenPI observations.")
+
+        raw_obs = get_native_raw_obs(sync_from_primary=sync_from_primary)
+        openpi_obs = {
+            "agentview": {
+                "images": {"rgb": np.asarray(raw_obs["agentview_image"][::-1])},
+            },
+            "robot0_eye_in_hand": {
+                "images": {"rgb": np.asarray(raw_obs["robot0_eye_in_hand_image"][::-1])},
+            },
+        }
+        payload = build_openpi_libero_input(
+            openpi_obs,
+            prompt=self._resolve_openpi_prompt(prompt),
+            raw_libero_obs=raw_obs,
+            resize_size=resize_size,
+        )
+        response = self._get_openpi_client(host=host, port=port).infer(payload)
+        actions = np.asarray(response["actions"], dtype=np.float64)
+        if actions.ndim != 2 or actions.shape[1] < 7:
+            raise ValueError(f"Unexpected OpenPI action chunk shape: {actions.shape}")
+        trimmed = actions[:replan_steps, :7]
+        self._emit_openpi_trace(
+            "native_action_chunk",
+            host=host,
+            port=port,
+            prompt=self._resolve_openpi_prompt(prompt),
+            replan_steps=int(replan_steps),
+            returned_steps=int(trimmed.shape[0]),
+            sync_from_primary=bool(sync_from_primary),
+        )
+        return trimmed
+
     def get_openpi_subgoal(
         self,
         resize_size: int = 224,
@@ -338,6 +383,155 @@ class FrankaLiberoOpenPIToolMixin:
             apply_gripper=apply_gripper,
             gripper_deadband=gripper_deadband,
         )
+
+    def execute_openpi_native_step(
+        self,
+        resize_size: int = 224,
+        prompt: str | None = None,
+        host: str = DEFAULT_OPENPI_HOST,
+        port: int = DEFAULT_OPENPI_PORT,
+        sync_from_primary: bool = False,
+    ) -> dict[str, Any]:
+        """Execute one raw OpenPI delta action through the native OSC_POSE LIBERO env."""
+        return self.execute_openpi_native_plan(
+            replan_steps=1,
+            execute_actions=1,
+            resize_size=resize_size,
+            prompt=prompt,
+            host=host,
+            port=port,
+            sync_from_primary=sync_from_primary,
+        )
+
+    def execute_openpi_raw_action(
+        self,
+        action: np.ndarray,
+        *,
+        sync_from_primary: bool = False,
+    ) -> dict[str, Any]:
+        """Execute a provided raw OpenPI action through the native OSC_POSE env."""
+        env_execute = getattr(self._env, "execute_openpi_native_action", None)
+        if env_execute is None:
+            raise RuntimeError("Current environment does not support native OpenPI execution.")
+        obs, reward, done, info = env_execute(action, sync_from_primary=sync_from_primary)
+        final_robot_cartesian_pos = np.asarray(obs["robot_cartesian_pos"], dtype=np.float64).reshape(8)
+        result = {
+            "executed_raw_action": np.asarray(action, dtype=np.float64).reshape(7),
+            "native_reward": float(reward),
+            "native_done": bool(done),
+            "native_info": dict(info),
+            "final_robot_cartesian_pos": final_robot_cartesian_pos,
+        }
+        self._emit_openpi_trace(
+            "execute_openpi_raw_action",
+            reward=float(reward),
+            done=bool(done),
+            final_position=np.round(final_robot_cartesian_pos[:3], 4).tolist(),
+        )
+        return result
+
+    def plan_with_openpi_native(
+        self,
+        replan_steps: int = 5,
+        resize_size: int = 224,
+        prompt: str | None = None,
+        host: str = DEFAULT_OPENPI_HOST,
+        port: int = DEFAULT_OPENPI_PORT,
+        sync_from_primary: bool = False,
+        translation_scale: float = 1.0,
+        rotation_scale: float = 1.0,
+        gripper_deadband: float = 0.05,
+    ) -> dict[str, Any]:
+        """Plan with OpenPI using the native OSC_POSE LIBERO observation path."""
+        obs = self.get_observation()
+        robot_cartesian_pos = np.asarray(obs["robot_cartesian_pos"], dtype=np.float64).reshape(8)
+        action_chunk = self.get_openpi_native_action_chunk(
+            replan_steps=replan_steps,
+            resize_size=resize_size,
+            prompt=prompt,
+            host=host,
+            port=port,
+            sync_from_primary=sync_from_primary,
+        )
+        subgoals = build_openpi_subgoals(
+            robot_cartesian_pos,
+            action_chunk,
+            translation_scale=translation_scale,
+            rotation_scale=rotation_scale,
+            gripper_deadband=gripper_deadband,
+        )
+        return {
+            "prompt": self._resolve_openpi_prompt(prompt),
+            "server_info": self.get_openpi_server_info(host=host, port=port),
+            "current_robot_cartesian_pos": robot_cartesian_pos,
+            "current_gripper_open_fraction": float(robot_cartesian_pos[7]),
+            "action_chunk": action_chunk,
+            "subgoals": subgoals,
+            "sync_from_primary": bool(sync_from_primary),
+        }
+
+    def execute_openpi_native_plan(
+        self,
+        replan_steps: int = 5,
+        execute_actions: int = 1,
+        resize_size: int = 224,
+        prompt: str | None = None,
+        host: str = DEFAULT_OPENPI_HOST,
+        port: int = DEFAULT_OPENPI_PORT,
+        sync_from_primary: bool = False,
+        translation_scale: float = 1.0,
+        rotation_scale: float = 1.0,
+        gripper_deadband: float = 0.05,
+    ) -> dict[str, Any]:
+        """Plan and execute raw OpenPI actions through the native OSC_POSE LIBERO env."""
+        env_execute_many = getattr(self._env, "execute_openpi_native_actions", None)
+        if env_execute_many is None:
+            raise RuntimeError("Current environment does not support native OpenPI execution.")
+        if execute_actions < 1:
+            raise ValueError("execute_actions must be at least 1")
+
+        plan = self.plan_with_openpi_native(
+            replan_steps=replan_steps,
+            resize_size=resize_size,
+            prompt=prompt,
+            host=host,
+            port=port,
+            sync_from_primary=sync_from_primary,
+            translation_scale=translation_scale,
+            rotation_scale=rotation_scale,
+            gripper_deadband=gripper_deadband,
+        )
+        raw_actions = np.asarray(plan["action_chunk"][:execute_actions], dtype=np.float64)
+        obs, reward, done, info, executed_steps = env_execute_many(
+            raw_actions, sync_from_primary=False
+        )
+        final_robot_cartesian_pos = np.asarray(
+            obs["robot_cartesian_pos"],
+            dtype=np.float64,
+        ).reshape(8)
+        result = dict(plan)
+        result["executed_raw_actions"] = raw_actions
+        result["executed_action_count"] = int(executed_steps)
+        result["native_reward"] = float(reward)
+        result["native_done"] = bool(done)
+        result["native_info"] = dict(info)
+        result["final_robot_cartesian_pos"] = final_robot_cartesian_pos
+        self._emit_openpi_trace(
+            "execute_openpi_native_plan",
+            prompt=result["prompt"],
+            reward=float(reward),
+            done=bool(done),
+            executed_action_count=int(executed_steps),
+            final_position=np.round(final_robot_cartesian_pos[:3], 4).tolist(),
+        )
+        self._log_step(
+            "execute_openpi_native_plan",
+            (
+                f"Executed {int(executed_steps)} native OpenPI delta action(s); "
+                f"final pose={np.round(final_robot_cartesian_pos[:3], 4).tolist()} reward={float(reward):.3f}."
+            ),
+        )
+        return result
 
     def execute_openpi_plan(
         self,
