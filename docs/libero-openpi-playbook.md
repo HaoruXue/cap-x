@@ -215,16 +215,12 @@ Run this from the base `.venv`, not `.venv-libero`.
 
 ```bash
 source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=7 \
-uv run --no-sync --active python -m capx.serving.vllm_server \
-  --model allenai/Molmo2-8B \
-  --host 127.0.0.1 \
+CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
+  --trust-remote-code \
   --port 8122 \
-  --tensor-parallel-size 1 \
-  --gpu-memory-utilization 0.55 \
-  --max-model-len 4096 \
-  --max-num-batched-tokens 8192 \
-  --trust-remote-code
+  --max-num-batched-tokens 36864 \
+  --dtype bfloat16 \
+  --limit-mm-per-prompt.image 2
 ```
 
 If the node is crowded, reduce `--gpu-memory-utilization` or move Molmo to a less loaded GPU. On this machine, ghost allocations often prevented Molmo from launching reliably.

@@ -179,15 +179,13 @@ uv run python -m capx.serving.vllm_server --model Qwen/Qwen2.5-Coder-7B-Instruct
 For Molmo2-backed pointing used by some LIBERO perception flows:
 
 ```bash
-CUDA_VISIBLE_DEVICES=7 uv run --no-sync --active python -m capx.serving.vllm_server \
-  --model allenai/Molmo2-8B \
-  --host 127.0.0.1 \
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
+  --trust-remote-code \
   --port 8122 \
-  --tensor-parallel-size 1 \
-  --gpu-memory-utilization 0.55 \
-  --max-model-len 4096 \
-  --max-num-batched-tokens 8192 \
-  --trust-remote-code
+  --max-num-batched-tokens 36864 \
+  --dtype bfloat16 \
+  --limit-mm-per-prompt.image 2
 ```
 
 ### Option C: Custom providers
