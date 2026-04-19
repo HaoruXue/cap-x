@@ -150,6 +150,26 @@ CaP-X queries language models through a local proxy server that exposes an OpenA
 
 OpenRouter provides access to Gemini, GPT, Claude, DeepSeek, Qwen, and other models through a single API key.
 
+### NVIDIA Inference
+
+NVIDIA Inference can be used through the local proxy in `capx/serving/nv_server.py`.
+
+1. Save one or more NVIDIA keys:
+   ```bash
+   printf '%s\n%s\n' 'nvapi-key-1' 'nvapi-key-2' > .nvinferencekey
+   ```
+2. Launch the proxy:
+   ```bash
+   uv run --no-sync --active capx/serving/nv_server.py --key-file .nvinferencekey --port 8110
+   ```
+3. Use provider-qualified model IDs. Important examples:
+   ```text
+   openai/openai/gpt-5.4
+   gcp/google/gemini-3.1-pro-preview
+   ```
+
+The NVIDIA proxy supports key rotation across multiple keys in the file. If all keys are rate-limited, requests can still fail with upstream `429`.
+
 ### Option B: vLLM (local models)
 
 ```bash
