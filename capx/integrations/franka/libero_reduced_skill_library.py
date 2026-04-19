@@ -376,7 +376,12 @@ class FrankaLiberoApiReducedSkillLibraryNoVLA(FrankaLiberoApiReducedSkillLibrary
     _OPENPI_FNS = {
         "get_openpi_server_info",
         "plan_with_openpi",
+        "get_openpi_native_action_chunk",
+        "plan_with_openpi_native",
         "execute_openpi_step",
+        "execute_openpi_raw_action",
+        "execute_openpi_native_step",
+        "execute_openpi_native_plan",
         "execute_openpi_plan",
         "get_openpi_action_chunk",
         "get_openpi_subgoal",
