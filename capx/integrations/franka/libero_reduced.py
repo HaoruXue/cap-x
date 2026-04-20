@@ -229,6 +229,79 @@ class FrankaLiberoApiReduced(FrankaLiberoOpenPIToolMixin, ApiBase):
         """
         return self.molmo_point_fn(Image.fromarray(image), objects=[text_prompt])
 
+    def locate_prompt_object(
+        self,
+        prompt: str,
+        text_fallbacks: list[str] | None = None,
+        camera_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Locate an object in the current observation via Molmo point prompt plus SAM3 refinement."""
+        obs = self.get_observation()
+        cam_name = camera_name or self.camera_name
+        cam = obs[cam_name]
+        rgb = cam["images"]["rgb"]
+        depth = cam["images"]["depth"]
+        intrinsics = cam["intrinsics"]
+        pose_mat = cam["pose_mat"]
+
+        candidates: list[tuple[float, np.ndarray]] = []
+        prompt_points = self.point_prompt_molmo(rgb, prompt)
+        if isinstance(prompt_points, dict):
+            for pt in prompt_points.values():
+                if pt is None or pt[0] is None or pt[1] is None:
+                    continue
+                point_masks = self.segment_sam3_point_prompt(rgb, (float(pt[0]), float(pt[1])))
+                for result in point_masks:
+                    mask = result.get("mask")
+                    if mask is None:
+                        continue
+                    score = float(result.get("score", 0.0))
+                    area = float(np.sum(mask))
+                    candidates.append((score + 1e-6 * area, np.asarray(mask).astype(bool)))
+
+        for text_prompt in text_fallbacks or [prompt]:
+            text_masks = self.segment_sam3_text_prompt(rgb, text_prompt)
+            for result in text_masks:
+                mask = result.get("mask")
+                if mask is None:
+                    continue
+                score = float(result.get("score", 0.0))
+                area = float(np.sum(mask))
+                candidates.append((score + 1e-6 * area, np.asarray(mask).astype(bool)))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_mask = candidates[0]
+        points_world = self.mask_to_world_points(best_mask, depth, intrinsics, pose_mat)
+        if points_world.shape[0] == 0:
+            return None
+        points_world = points_world[np.isfinite(points_world).all(axis=1)]
+        if points_world.shape[0] == 0:
+            return None
+        points_world = self.subsample_point_cloud(points_world, max_points=5000)
+        points_world, _ = self.filter_noise(points_world, None)
+        if points_world is None or points_world.shape[0] == 0:
+            return None
+
+        center_world = np.median(points_world, axis=0)
+        top_z = float(np.max(points_world[:, 2]))
+        return {
+            "mask": best_mask,
+            "points_world": points_world,
+            "center_world": center_world,
+            "top_z": top_z,
+            "score": best_score,
+        }
+
+    def goto_topdown_above(self, world_xyz: np.ndarray, dz: float = 0.12) -> None:
+        """Move to a top-down hover pose above a world point."""
+        target = np.asarray(world_xyz, dtype=np.float64).copy()
+        target[2] += dz
+        quat = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+        self.goto_pose(target, quat)
+
     def get_oriented_bounding_box_from_3d_points(self, points: np.ndarray) -> dict[str, Any]:
         """Get the oriented bounding box from 3D points.
 
@@ -247,6 +320,37 @@ class FrankaLiberoApiReduced(FrankaLiberoOpenPIToolMixin, ApiBase):
             >>> obb = get_oriented_bounding_box_from_3d_points(points)
         """
         return _get_obb(points)
+
+    def mask_to_world_points(
+        self, mask: np.ndarray, depth: np.ndarray, intrinsics: np.ndarray, extrinsics: np.ndarray
+    ) -> np.ndarray:
+        """Convert a binary mask into 3D points in the world frame."""
+        ys, xs = np.where(mask > 0)
+        if len(ys) == 0:
+            return np.empty((0, 3))
+
+        if depth.ndim == 3:
+            depth = depth[:, :, 0]
+
+        z_vals = depth[ys, xs]
+        valid = np.isfinite(z_vals) & (z_vals > 0)
+        ys = ys[valid]
+        xs = xs[valid]
+        z = z_vals[valid]
+        if len(z) == 0:
+            return np.empty((0, 3))
+
+        fx = intrinsics[0, 0]
+        fy = intrinsics[1, 1]
+        cx = intrinsics[0, 2]
+        cy = intrinsics[1, 2]
+
+        x_cam = (xs - cx) * z / fx
+        y_cam = (ys - cy) * z / fy
+        points_cam = np.stack([x_cam, y_cam, z], axis=-1)
+        points_cam_hom = np.hstack([points_cam, np.ones((len(points_cam), 1))])
+        points_world_hom = (extrinsics @ points_cam_hom.T).T
+        return points_world_hom[:, :3]
 
     # --------------------------------------------------------------------- #
     # Grasp planner (Contact-GraspNet)
@@ -940,4 +1044,32 @@ class FrankaLiberoVLAApiReduced(FrankaLiberoApiReduced):
             "move_to_joints": self.move_to_joints,
             "subsample_point_cloud": self.subsample_point_cloud,
             "filter_noise": self.filter_noise,
+        }
+
+
+class FrankaLiberoVLAMinimalApiReduced(FrankaLiberoApiReduced):
+    """Minimal LIBERO VLA API to reduce tool-search complexity for hybrid runs.
+
+    Exposes only the observation, a small perception surface, native OpenPI tools,
+    and a few basic motion primitives. The goal is to discourage the coding model
+    from expanding into large custom control stacks when the experiment is about
+    VLA + light explicit reasoning rather than full hand-written policy code.
+    """
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "segment_sam3_text_prompt": self.segment_sam3_text_prompt,
+            "segment_sam3_point_prompt": self.segment_sam3_point_prompt,
+            "point_prompt_molmo": self.point_prompt_molmo,
+            "locate_prompt_object": self.locate_prompt_object,
+            "mask_to_world_points": self.mask_to_world_points,
+            "subsample_point_cloud": self.subsample_point_cloud,
+            "filter_noise": self.filter_noise,
+            "goto_topdown_above": self.goto_topdown_above,
+            "goto_pose": self.goto_pose,
+            "goto_home_joint_position": self.goto_home_joint_position,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
         }

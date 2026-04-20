@@ -1,0 +1,79 @@
+# Goal-generic minimal hybrid for LIBERO-PRO object-swap tasks.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 0
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      OpenPI is a short-horizon local prior, not a global planner. For object-swap tasks:
+      - localize the basket first with fixed prompts such as "basket", "woven basket", "square woven basket"
+      - localize the target object described by Goal
+      - do not hardcode task-0 object names like alphabet soup unless Goal actually says that
+      - prefer `point_prompt_molmo` with the exact target noun phrase from Goal, or with the full Goal, then refine with `segment_sam3_point_prompt`
+      - once the target object is localized, convert its mask to world points, move to a top-down hover directly above it, and then call exactly one `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+      - re-observe
+      - if the object is grasped, explicitly place it into the basket
+      - if OpenPI did not pick the object, do one short explicit top-down pick, then explicit basket placement
+
+      Examples:
+      - If Goal says "Pick the cream cheese and place it in the basket", localize cream cheese, move above it, call OpenPI with the full Goal, then explicitly place in the basket.
+      - If Goal says "Pick the ketchup and place it in the basket", localize ketchup, not alphabet soup, then do the same pattern.
+
+      Keep the code short. Avoid helper libraries, large retry loops, and task-0-specific prompt ladders.
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      If OpenPI already failed once, stop repeating it.
+      Use the exact full Goal again if you call OpenPI.
+      Keep the next code block short and direct.
+      Only respond with `FINISH` if task_completed is true or the object is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_object_swap_vla_minimal_v2
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 3
+num_workers: 1

@@ -17,7 +17,11 @@ from .franka.two_arm_lift_privileged import FrankaTwoArmLiftPrivilegedApi
 try:
     from .franka.libero import FrankaLiberoApi, FrankaLiberoVLAApi, FrankaLiberoVLANoSam3Api
     from .franka.libero_privileged import FrankaLiberoPrivilegedApi
-    from .franka.libero_reduced import FrankaLiberoApiReduced, FrankaLiberoVLAApiReduced
+    from .franka.libero_reduced import (
+        FrankaLiberoApiReduced,
+        FrankaLiberoVLAApiReduced,
+        FrankaLiberoVLAMinimalApiReduced,
+    )
     from .franka.libero_reduced_skill_library import (
         FrankaLiberoApiReducedSkillLibrary,
         FrankaLiberoApiReducedSkillLibraryNoVLA,
@@ -133,5 +137,6 @@ if _libero_available:
     register_api("FrankaLiberoVLANoSam3Api", lambda env: FrankaLiberoVLANoSam3Api(env, use_sam3=False))
     register_api("FrankaLiberoApiReduced", FrankaLiberoApiReduced)
     register_api("FrankaLiberoVLAApiReduced", FrankaLiberoVLAApiReduced)
+    register_api("FrankaLiberoVLAMinimalApiReduced", FrankaLiberoVLAMinimalApiReduced)
     register_api("FrankaLiberoApiReducedSkillLibrary", FrankaLiberoApiReducedSkillLibrary)
     register_api("FrankaLiberoApiReducedSkillLibraryNoVLA", FrankaLiberoApiReducedSkillLibraryNoVLA)

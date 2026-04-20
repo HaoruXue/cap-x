@@ -1,0 +1,79 @@
+# Targeted helper-based minimal hybrid for LIBERO-PRO spatial-swap task 6.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_spatial_swap
+      task_id: 6
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      Use this compact hybrid pattern:
+      - `plate = locate_prompt_object("plate", ["plate"])`
+      - `target = locate_prompt_object(Goal, ["black bowl next to the cookie box", "black bowl"])`
+      - if target exists, call `goto_topdown_above(target["center_world"], dz=0.14)`
+      - then call exactly one `execute_openpi_native_plan(prompt=Goal, replan_steps=5, execute_actions=5)`
+      - re-observe
+      - if the bowl is clearly on the plate, finish
+      - otherwise do at most one short explicit recovery
+
+      Important:
+      - VLA is only a local prior once the gripper is already above the correct bowl
+      - keep the code very short
+      - do not rebuild localization helper libraries
+      - do not reduce OpenPI to many tiny step calls
+
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      Use the same compact hybrid pattern again.
+      If OpenPI already failed once, stop repeating it.
+      Keep the next code block short and direct.
+      Only respond with `FINISH` if task_completed is true or the bowl is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_spatial_swap_6_vla_minimal_v2
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 3
+num_workers: 1
