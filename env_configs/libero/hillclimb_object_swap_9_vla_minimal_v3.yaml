@@ -1,0 +1,90 @@
+# Orange-juice hybrid v3: follow the successful broad-scout pattern more closely.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 9
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      Use this compact control pattern:
+      - if `"USED_OPENPI" not in globals()`: set `USED_OPENPI = False`
+      - localize the basket first with `locate_prompt_object("basket", ["basket", "woven basket", "square woven basket"])`
+      - localize the target with `locate_prompt_object(Goal, ["orange juice", "orange juice bottle", "juice carton", "orange drink"])`
+      - if the target exists:
+        - `open_gripper()`
+        - move to a local top-down pregrasp above `target["center_world"]`
+      - only if `USED_OPENPI` is False:
+        - call exactly one `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+        - set `USED_OPENPI = True`
+      - re-observe by localizing the target again
+      - treat this as likely picked only if the orange juice is no longer clearly localized
+      - only if it is still visible, do one simple explicit top-down pickup:
+        - hover above target
+        - descend near `target["top_z"]`
+        - close gripper
+        - lift
+      - if the basket exists, do one explicit basket placement using `basket["center_world"]`
+      - do not call OpenPI again on later regenerations
+
+      Important:
+      - OpenPI is a one-time local pickup prior here, not a full planner
+      - keep the code short
+      - do not build helper libraries
+      - do not use repeated retry loops
+
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      Keep using the persistent `USED_OPENPI` guard.
+      If OpenPI was already used once, do not call it again.
+      Re-localize orange juice and basket, then do only a short direct correction.
+      Only respond with `FINISH` if task_completed is true or the object is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_object_swap_9_vla_minimal_v3
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 10
+num_workers: 1
