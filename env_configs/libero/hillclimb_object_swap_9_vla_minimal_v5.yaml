@@ -1,0 +1,94 @@
+# Orange-juice hybrid v5: same as v4, but gate placement on a plausible pickup signal.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 9
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      Preferred pattern:
+      - get one observation
+      - localize basket first
+      - localize orange juice with a compact helper that prefers:
+        - `point_prompt_molmo(rgb, prompt)`
+        - `segment_sam3_point_prompt(...)`
+        - fallback `segment_sam3_text_prompt(...)`
+        - `mask_to_world_points(...)`
+        - `subsample_point_cloud(...)`
+        - `filter_noise(...)`
+        - median center and top height
+      - it is fine to define one short `localize(...)` helper for this
+      - if the target exists:
+        - open gripper
+        - move to a top-down pregrasp slightly above the target top
+      - call exactly one short `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+      - re-observe and localize the orange juice again
+      - infer `picked` conservatively:
+        - `picked = target_after is None`
+        - or `picked = gripper looks closed and target is no longer clearly centered under the gripper`
+      - only if it is still clearly visible and not picked, do one simple explicit top-down pickup and lift
+      - only place into the basket if pickup is plausible
+      - if pickup is not plausible, do not perform a fake basket place
+
+      Important:
+      - OpenPI is a one-time local pickup prior here
+      - if OpenPI already failed once, stop repeating it
+      - keep the code compact, but one short helper is allowed
+      - do not build large libraries or long retry loops
+
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      If OpenPI already failed once, stop repeating it.
+      Re-localize orange juice and basket, then do only a short direct correction.
+      Only place into the basket if the object is plausibly grasped.
+      Only respond with `FINISH` if task_completed is true or the object is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_object_swap_9_vla_minimal_v5
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 10
+num_workers: 1
