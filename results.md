@@ -1,6 +1,6 @@
 # Results
 
-Last updated: 2026-04-20
+Last updated: 2026-04-21
 
 ## Setup
 
@@ -27,6 +27,8 @@ Three Python entrypoints are used for the main comparison matrix:
   - `capx/envs/scripts/run_libero_batch.py`
 - Hybrid coding-agent + VLA:
   - `capx/envs/launch.py`
+- Direct helper-only hybrid ablation:
+  - `capx/envs/scripts/run_openpi_local_helper_eval.py`
 
 ## One-Task End-to-End Walkthrough
 
@@ -193,21 +195,60 @@ CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
 - Butter:
   - `env_configs/libero/hillclimb_object_swap_6_vla_minimal_v4.yaml`
 
-## Latest 10-Trial Comparison Snapshot
+## Latest Direct VLA Scout Results
+
+These are pure OpenPI / direct LIBERO numbers from local GPU-backed sweeps:
+
+| Task | Suite / task id | Pure VLA |
+|---|---|---:|
+| Orange juice | `libero_object_swap:9` | `3/20` |
+| Butter | `libero_object_swap:6` | `9/20` |
+| Salad dressing | `libero_object_swap:2` | `0/20` |
+| Milk | `libero_object_swap:7` | `0/20` |
+| Spatial swap task 1 | `libero_spatial_swap:1` | `2/20` |
+| Spatial swap task 6 | `libero_spatial_swap:6` | `0/20` |
+
+Important consequence:
+
+- `butter` is now the strongest VLA task we have found for LIBERO-PRO-style object swap.
+- `orange juice` is no longer the best hillclimb target.
+- `salad dressing`, `milk`, and the sampled spatial-swap tasks are poor VLA targets under the current OpenPI checkpoint.
+
+## Latest Targeted Comparison Snapshot
 
 ### LIBERO-PRO Object Swap
 
-| Task | Pure VLA | Clean CaP-X | Hybrid |
+| Task | Pure VLA | Clean CaP-X | Hybrid / Helper |
 |---|---:|---:|---:|
-| Orange juice (`task_id=9`) | `0/10` | `9/10` | `3/10` with `v4`, `0/10` with `v5` |
-| Salad dressing (`task_id=2`) | `0/10` | `6/10` | `0/10` with `v1` |
-| Butter (`task_id=6`) | `1/10` | `8/10` | `0/10` with `v3` |
+| Orange juice (`task_id=9`) | `3/20` | `13/20` clean `20`-trial run, `9/10` earlier targeted run | `3/10` with `v4`; prompt-only/helper reruns did not improve |
+| Salad dressing (`task_id=2`) | `0/20` | `8/20` clean `20`-trial run, `6/10` earlier targeted run | `0/10` with `v1` |
+| Butter (`task_id=6`) | `9/20`; matched seeds `1/5` on GPU 7 | `17/20` clean `20`-trial run, `8/10` earlier targeted run | `0/10` with `v3`; helper ablations still `0/5` on matched seeds |
 
 Notes:
 
-- The earlier one-trial broad scout made orange juice look like the strongest hybrid candidate.
-- The 10-trial targeted rerun did not hold that result: hybrid beat pure VLA on orange juice, but not clean CaP-X.
-- Butter currently looks the most hillclimbable because Molmo is responding better to `stick of butter` than plain `butter`.
+- The earlier one-trial broad scout made orange juice look like the strongest hybrid candidate, but the larger reruns did not hold that up.
+- Butter is now the best target because the direct VLA policy is materially stronger there than on other sampled tasks.
+- The remaining problem is integration: the helper / hybrid path is still worse than direct VLA on matched seeds.
+
+## Latest Helper Ablation Snapshot
+
+These runs remove the coding model entirely and test only the local helper pattern:
+
+| Task | Helper setting | Result |
+|---|---|---:|
+| Orange juice (`task_id=9`) | staged helper, `3/3` OpenPI burst | `0/1` |
+| Orange juice (`task_id=9`) | staged helper, `5/5` OpenPI burst | `0/1` |
+| Butter (`task_id=6`) | staged helper, `3/3` OpenPI burst | `0/1` |
+| Butter (`task_id=6`) | no-stage helper, `3/3` OpenPI burst | `0/5` |
+| Butter (`task_id=6`) | no-stage helper, alias-fixed, `5/5` OpenPI burst | `0/5` |
+
+Interpretation:
+
+- The helper path is still breaking the policy structure even after:
+  - removing pre-staging
+  - fixing object aliases
+  - matching the direct baseline's `5/5` OpenPI horizon
+- On matched seeds for butter, direct VLA gets `1/5` while the helper gets `0/5`, so the helper remains worse but only slightly.
 
 ## Current Artifact Pointers
 
@@ -233,28 +274,39 @@ Notes:
 - Success:
   - `outputs/object_swap_task6_clean_10trials/libero_object_swap/pick_up_the_butter_and_place_it_in_the_basket/openai_openai_gpt-5.4/run/trial_01_sandboxrc_0_reward_1.000_taskcompleted_1`
 
+### Direct Helper Ablations
+
+- Orange juice, alias-fixed helper:
+  - `outputs/openpi_helper_eval_task9_short_targetfix`
+- Orange juice, longer `5/5` helper burst:
+  - `outputs/openpi_helper_eval_task9_long`
+- Butter, alias-fixed no-stage helper `5` trials:
+  - `outputs/openpi_helper_eval_task6_nostage_5trials_aliasfix_long`
+
 ## Current Interpretation
 
-- On targeted 10-trial reruns, no hybrid configuration is yet better than both pure VLA and clean CaP-X.
-- Hybrid is currently only clearly better than pure VLA on orange juice.
-- The most actionable current failure mode is prompt/perception mismatch for local object grounding, especially on butter.
+- On the current targeted reruns, no hybrid configuration is yet better than both pure VLA and clean CaP-X.
+- Butter is the best current hillclimb target because direct VLA is already strong there (`9/20`).
+- The main remaining issue is not just prompt wording. It is helper structure:
+  - OpenPI itself can work on butter.
+  - The current helper / hybrid path still degrades that policy.
+- The next change should be a butter-specific helper pattern:
+  - direct-first OpenPI
+  - reobserve
+  - optional single aligned retry
+  - only then explicit fallback
 
 ## Next 20-Trial Matrix
 
-The next intended 20-trial comparisons are:
+The next intended comparisons are:
 
-- Orange juice:
-  - pure VLA
-  - clean CaP-X
-  - hybrid `v4`
-- Salad dressing:
-  - pure VLA
-  - clean CaP-X
-  - hybrid `v1`
 - Butter:
   - pure VLA
   - clean CaP-X
-  - hybrid `v4`
+  - helper / hybrid variants, starting with a direct-first butter-specific helper
+- Optional follow-up only if butter stalls:
+  - orange juice clean vs hybrid
+  - spatial-swap task `1`
 
 ## Example 20-Trial Commands
 

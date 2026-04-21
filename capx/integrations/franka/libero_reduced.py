@@ -302,6 +302,104 @@ class FrankaLiberoApiReduced(FrankaLiberoOpenPIToolMixin, ApiBase):
         quat = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
         self.goto_pose(target, quat)
 
+    def execute_openpi_local_pick_and_place(
+        self,
+        goal_prompt: str,
+        target_prompts: list[str],
+        basket_prompts: list[str] | None = None,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        replan_steps: int = 3,
+        execute_actions: int = 3,
+        hover_dz: float = 0.10,
+        grasp_dz: float = 0.015,
+        lift_dz: float = 0.16,
+        place_dz: float = 0.12,
+        stage_before_openpi: bool = True,
+    ) -> dict[str, Any]:
+        """Run a constrained local hybrid pattern: hover, one VLA burst, verify pickup, then place."""
+        basket_prompts = basket_prompts or ["basket", "woven basket", "square woven basket"]
+        target_queries = list(dict.fromkeys(target_prompts or [goal_prompt]))
+
+        def locate_target() -> tuple[dict[str, Any] | None, str]:
+            ordered_queries = sorted(target_queries, key=lambda text: (-len(text), text))
+            for query in ordered_queries:
+                result = self.locate_prompt_object(query, target_prompts)
+                if result is not None:
+                    return result, query
+            fallback_query = target_queries[0] if target_queries else goal_prompt
+            return None, fallback_query
+
+        basket = self.locate_prompt_object("basket", basket_prompts)
+        target_before, target_query = locate_target() if stage_before_openpi else (None, target_queries[0])
+
+        if target_before is not None:
+            self.open_gripper()
+            self.goto_topdown_above(np.asarray(target_before["center_world"], dtype=np.float64), dz=hover_dz)
+
+        openpi_result = self.execute_openpi_native_plan(
+            prompt=goal_prompt,
+            host=host,
+            port=port,
+            replan_steps=replan_steps,
+            execute_actions=execute_actions,
+        )
+
+        obs_after = self.get_observation()
+        target_after, target_query = locate_target()
+        gripper_open_fraction = float(obs_after["robot_cartesian_pos"][-1])
+        ee_xyz = np.asarray(obs_after["robot_cartesian_pos"][:3], dtype=np.float64)
+
+        picked = False
+        if target_after is None:
+            picked = gripper_open_fraction < 0.35
+        elif target_before is not None:
+            moved_up = float(target_after["center_world"][2]) > float(target_before["center_world"][2]) + 0.03
+            near_gripper = np.linalg.norm(np.asarray(target_after["center_world"], dtype=np.float64) - ee_xyz) < 0.08
+            picked = gripper_open_fraction < 0.35 and (moved_up or near_gripper)
+
+        if target_after is not None and not picked:
+            target_xyz = np.asarray(target_after["center_world"], dtype=np.float64)
+            self.open_gripper()
+            self.goto_topdown_above(target_xyz, dz=hover_dz)
+            grasp_xyz = target_xyz.copy()
+            grasp_xyz[2] = float(target_after["top_z"]) + grasp_dz
+            topdown_q = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+            self.goto_pose(grasp_xyz, topdown_q, z_approach=0.0)
+            self.close_gripper()
+            lift_xyz = grasp_xyz.copy()
+            lift_xyz[2] = float(target_after["top_z"]) + lift_dz
+            self.goto_pose(lift_xyz, topdown_q)
+
+            obs_verify = self.get_observation()
+            target_verify, target_query = locate_target()
+            gripper_open_fraction = float(obs_verify["robot_cartesian_pos"][-1])
+            ee_xyz = np.asarray(obs_verify["robot_cartesian_pos"][:3], dtype=np.float64)
+            if target_verify is None:
+                picked = gripper_open_fraction < 0.35
+            else:
+                moved_up = float(target_verify["center_world"][2]) > float(target_xyz[2]) + 0.03
+                near_gripper = np.linalg.norm(np.asarray(target_verify["center_world"], dtype=np.float64) - ee_xyz) < 0.08
+                picked = gripper_open_fraction < 0.35 and (moved_up or near_gripper)
+
+        if picked and basket is not None:
+            basket_xyz = np.asarray(basket["center_world"], dtype=np.float64)
+            self.goto_topdown_above(basket_xyz, dz=place_dz + 0.06)
+            topdown_q = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+            place_xyz = basket_xyz.copy()
+            place_xyz[2] = float(basket["top_z"]) + place_dz
+            self.goto_pose(place_xyz, topdown_q, z_approach=0.0)
+            self.open_gripper()
+            self.goto_topdown_above(basket_xyz, dz=place_dz + 0.06)
+
+        return {
+            "picked": picked,
+            "target_visible_after": target_after is not None,
+            "basket_found": basket is not None,
+            "openpi_result": openpi_result,
+        }
+
     def get_oriented_bounding_box_from_3d_points(self, points: np.ndarray) -> dict[str, Any]:
         """Get the oriented bounding box from 3D points.
 
@@ -1060,6 +1158,7 @@ class FrankaLiberoVLAMinimalApiReduced(FrankaLiberoApiReduced):
         return {
             "get_observation": self.get_observation,
             "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "execute_openpi_local_pick_and_place": self.execute_openpi_local_pick_and_place,
             "segment_sam3_text_prompt": self.segment_sam3_text_prompt,
             "segment_sam3_point_prompt": self.segment_sam3_point_prompt,
             "point_prompt_molmo": self.point_prompt_molmo,

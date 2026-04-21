@@ -156,7 +156,7 @@ class OpenPIWebsocketClient:
             compression=None,
             max_size=None,
             additional_headers=headers,
-            open_timeout=120,
+            open_timeout=300,
             ping_interval=None,
             ping_timeout=None,
         )
