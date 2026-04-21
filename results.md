@@ -28,6 +28,117 @@ Three Python entrypoints are used for the main comparison matrix:
 - Hybrid coding-agent + VLA:
   - `capx/envs/launch.py`
 
+## One-Task End-to-End Walkthrough
+
+The most complete single-task example right now is orange juice:
+
+- suite: `libero_object_swap`
+- task id: `9`
+- task prompt: `Pick the orange juice and place it in the basket`
+
+Files and directories you need:
+
+- CaP-X checkout:
+  - this repo
+- OpenPI checkout:
+  - a separate checkout, referenced by `OPENPI_ROOT`
+- OpenPI LIBERO checkpoint:
+  - config: `pi05_libero`
+  - checkpoint: `gs://openpi-assets/checkpoints/pi05_libero`
+- LIBERO config file:
+  - `~/.libero/config.yaml`
+- Python envs:
+  - `.venv`
+  - `.venv-libero`
+
+### Annotated Bash Walkthrough
+
+```bash
+# 1. Activate the LIBERO-capable environment used for eval scripts.
+source .venv-libero/bin/activate
+
+# 2. Export the OpenPI checkout. This checkout must contain:
+#    - scripts/serve_policy.py
+#    - the OpenPI Python package and its env
+export OPENPI_ROOT=/path/to/openpi
+
+# 3. Launch the NVIDIA-compatible LLM proxy used by the coding agent.
+#    This is the endpoint used by clean CaP-X and hybrid CaP-X+VLA.
+uv run --active --no-sync capx/serving/nv_server.py \
+  --host 127.0.0.1 \
+  --port 8110 \
+  --model openai/openai/gpt-5.4 \
+  --key-file .nvinferencekey
+
+# 4. Launch OpenPI serving the LIBERO checkpoint.
+#    The first run may download/cache model assets from:
+#    gs://openpi-assets/checkpoints/pi05_libero
+OPENPI_ROOT=$OPENPI_ROOT \
+uv run --active --no-sync capx/serving/launch_openpi_server.py \
+  --policy-config pi05_libero \
+  --policy-dir gs://openpi-assets/checkpoints/pi05_libero \
+  --port 8000
+
+# 5. Launch the primitive perception / motion servers used by CaP-X.
+#    These are needed by clean CaP-X and hybrid CaP-X+VLA.
+uv run --active --no-sync capx/serving/launch_pyroki_server.py \
+  --host 127.0.0.1 \
+  --port 8116 \
+  --robot panda_description \
+  --target-link panda_hand
+
+uv run --active --no-sync capx/serving/launch_contact_graspnet_server.py \
+  --host 127.0.0.1 \
+  --port 8115
+
+uv run --active --no-sync capx/serving/launch_sam3_server.py \
+  --host 127.0.0.1 \
+  --port 8114 \
+  --device cuda
+
+# 6. Optional but useful: Molmo2 pointing server for object-centric prompts.
+#    This helps with object grounding in the hybrid prompts.
+CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
+  --trust-remote-code \
+  --port 8122 \
+  --max-num-batched-tokens 36864 \
+  --dtype bfloat16 \
+  --limit-mm-per-prompt.image 2
+
+# 7. Pure VLA baseline on orange juice.
+.venv-libero/bin/python3 capx/envs/scripts/run_openpi_libero_eval.py \
+  --task-suite-name libero_object_swap \
+  --task-id 9 \
+  --num-trials-per-task 20 \
+  --port 8000
+
+# 8. Clean coding-agent baseline on orange juice.
+.venv-libero/bin/python3 capx/envs/scripts/run_libero_batch.py \
+  --args.base-config-path env_configs/libero/hillclimb_object_swap_0_clean_fast.yaml \
+  --args.suites libero_object_swap \
+  --args.task-id-start 9 \
+  --args.task-id-end 9 \
+  --args.models openai/openai/gpt-5.4 \
+  --args.server-url http://127.0.0.1:8110/chat/completions \
+  --args.max-tokens 4096 \
+  --args.reasoning-effort low \
+  --args.total-trials 20 \
+  --args.output-dir ./outputs/object_swap_task9_clean_20trials
+
+# 9. Hybrid coding-agent + VLA evaluation on orange juice.
+#    This uses the explicit orange-juice hybrid prompt config.
+.venv-libero/bin/python3 capx/envs/launch.py \
+  --config-path env_configs/libero/hillclimb_object_swap_9_vla_minimal_v4.yaml \
+  --model openai/openai/gpt-5.4 \
+  --server-url http://127.0.0.1:8110/chat/completions \
+  --visual-differencing-model openai/openai/gpt-5.4 \
+  --visual-differencing-model-server-url http://127.0.0.1:8110/chat/completions \
+  --max-tokens 4096 \
+  --reasoning-effort low \
+  --total-trials 20 \
+  --output-dir ./outputs/object_swap_task9_hybrid_20trials_v4
+```
+
 ## Core Launch Commands
 
 ### Pure VLA / Direct OpenPI

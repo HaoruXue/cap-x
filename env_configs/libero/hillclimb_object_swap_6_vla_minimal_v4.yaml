@@ -15,9 +15,10 @@ env:
     apis:
       - FrankaLiberoVLAMinimalApiReduced
     prompt: |
-      Goal: {libero_environment_goal}
+      Goal: Pick the butter and place it in the basket
 
-      Use the exact full Goal if you call OpenPI.
+      If you call OpenPI, call it with exactly this prompt string:
+      `Pick the butter and place it in the basket`
 
       Preferred pattern:
       - get one observation
@@ -32,8 +33,9 @@ env:
       - it is fine to define one short `localize(...)` helper
       - if the target exists:
         - open gripper
-        - move to a top-down pregrasp slightly above the target top
-      - call exactly one short `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+        - move the end effector to a top-down pregrasp slightly above the butter
+        - only once the end effector is in close proximity above the butter, switch to VLA
+      - call exactly one short `execute_openpi_native_plan(prompt="Pick the butter and place it in the basket", replan_steps=3, execute_actions=3)`
       - re-observe and localize butter again
       - infer pickup conservatively:
         - `picked = target_after is None`
@@ -43,7 +45,7 @@ env:
       - never mark pickup plausible just because you attempted a grasp
 
       Important:
-      - OpenPI is a one-time local pickup prior here
+      - VLA is useful only after you move the end effector above or very near the target object
       - if OpenPI already failed once, stop repeating it
       - keep the code compact, but one short helper is allowed
       - do not build large libraries or long retry loops
@@ -51,7 +53,7 @@ env:
       Only write executable Python code.
 
     multi_turn_prompt: |
-      Goal: {libero_environment_goal}
+      Goal: Pick the butter and place it in the basket
       stdout:
       ```
       {console_stdout}
@@ -64,6 +66,9 @@ env:
 
       If OpenPI already failed once, stop repeating it.
       Use the stronger butter prompt ladder: `stick of butter`, `butter`, `butter package`, `yellow butter`, `Goal`.
+      If you call VLA again, use exactly:
+      `execute_openpi_native_plan(prompt="Pick the butter and place it in the basket", ...)`
+      Start using VLA only when the end effector is already in close proximity above the butter.
       Re-localize butter and basket, then do only a short direct correction.
       Only place into the basket if the object is plausibly grasped after re-observation.
       Otherwise respond with `REGENERATE` and new Python code.

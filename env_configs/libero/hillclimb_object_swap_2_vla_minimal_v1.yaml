@@ -15,9 +15,10 @@ env:
     apis:
       - FrankaLiberoVLAMinimalApiReduced
     prompt: |
-      Goal: {libero_environment_goal}
+      Goal: Pick the salad dressing and place it in the basket
 
-      Use the exact full Goal if you call OpenPI.
+      If you call OpenPI, call it with exactly this prompt string:
+      `Pick the salad dressing and place it in the basket`
 
       Preferred pattern:
       - get one observation
@@ -33,15 +34,16 @@ env:
       - it is fine to define one short `localize(...)` helper for this
       - if the target exists:
         - open gripper
-        - move to a top-down pregrasp slightly above the target top
-      - call exactly one short `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+        - move the end effector to a top-down pregrasp slightly above the salad dressing
+        - only once the end effector is in close proximity above the salad dressing, switch to VLA
+      - call exactly one short `execute_openpi_native_plan(prompt="Pick the salad dressing and place it in the basket", replan_steps=3, execute_actions=3)`
       - re-observe and localize salad dressing again
       - infer `picked` conservatively
       - only if it is still clearly visible and not picked, do one simple explicit top-down pickup and lift
       - only place into the basket if pickup is plausible
 
       Important:
-      - OpenPI is a one-time local pickup prior here
+      - VLA is useful only after you move the end effector above or very near the target object
       - if OpenPI already failed once, stop repeating it
       - keep the code compact, but one short helper is allowed
       - do not build large libraries or long retry loops
@@ -49,7 +51,7 @@ env:
       Only write executable Python code.
 
     multi_turn_prompt: |
-      Goal: {libero_environment_goal}
+      Goal: Pick the salad dressing and place it in the basket
       stdout:
       ```
       {console_stdout}
@@ -61,6 +63,9 @@ env:
       status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
 
       If OpenPI already failed once, stop repeating it.
+      If you call VLA again, use exactly:
+      `execute_openpi_native_plan(prompt="Pick the salad dressing and place it in the basket", ...)`
+      Start using VLA only when the end effector is already in close proximity above the salad dressing.
       Re-localize salad dressing and basket, then do only a short direct correction.
       Only place into the basket if the object is plausibly grasped.
       Only respond with `FINISH` if task_completed is true or the object is clearly placed correctly.
