@@ -33,14 +33,18 @@ env:
         5-10 cm above the object using `goto_pose`.
 
       Phase 2 — hand off to VLA (NATIVE, raw env.step):
-      - Once the end effector is close above the target, call
+      - Once the end effector is close above the target, burst a LARGE
+        number of native VLA rollout steps in a single code block.
+        cap-x's multi-turn cap is 10 code blocks; each VLA call is only
+        5 env steps, so run 20+ VLA calls per block to give the VLA
+        enough horizon. Example:
 
-            execute_openpi_native_plan(replan_steps=5, execute_actions=5, prompt="<exact task goal>")
+            for _ in range(30):
+                execute_openpi_native_plan(replan_steps=5, execute_actions=5,
+                                            prompt="<exact task goal>")
+            # 150 env steps per block — enough for pick + place
 
-        to let the VLA complete the pick + place. This path feeds the
-        VLA's delta actions directly into env.step — different from
-        execute_openpi_plan which converts outputs to cartesian waypoints.
-      - If not finished, re-observe and call `execute_openpi_native_plan` again.
+      - If not finished, re-observe and run another burst.
 
       Important:
       - The VLA is much more reliable when the end effector is already

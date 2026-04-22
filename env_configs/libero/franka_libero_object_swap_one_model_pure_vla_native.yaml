@@ -31,15 +31,20 @@ env:
       You have a dedicated VLA policy exposed through the OpenPI-named tools.
       The backend is one-model; the wire contract is identical.
 
-      PREFERRED STRATEGY: call
+      PREFERRED STRATEGY: burst 20-50 VLA rollout steps per code block.
+      The cap-x multi-turn cap is 10 code blocks; each block should run
+      MANY native actions to give the VLA enough horizon to complete the
+      pick + place. Example code block:
 
-          execute_openpi_native_plan(replan_steps=5, execute_actions=5)
+          for _ in range(10):
+              execute_openpi_native_plan(replan_steps=5, execute_actions=5)
+          # 50 env steps = ~2.5s of sim, enough for an approach or a grasp
 
-      REPEATEDLY until the task completes. This path feeds the VLA's
-      delta actions directly into env.step, which is what the VLA was
-      trained to drive. Do NOT use execute_openpi_plan (that path
-      converts VLA outputs to cartesian waypoints and executes them via
-      IK — different execution semantics).
+      This path feeds the VLA's delta actions directly into env.step,
+      which is what the VLA was trained to drive. Do NOT use
+      execute_openpi_plan (that path converts VLA outputs to cartesian
+      waypoints and executes them via IK — different execution
+      semantics).
 
       Do not hand-craft motion plans. Do not call `goto_pose`. Only
       `FINISH` once the observation visually confirms the object is placed
