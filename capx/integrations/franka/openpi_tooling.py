@@ -25,18 +25,26 @@ def _build_one_model_libero_input(
 ) -> dict[str, Any]:
     """Build the robosuite-keyed payload the one-model libero_robosuite adapter expects.
 
-    Matches training orientation: flips images ``[::-1, ::-1]`` (both axes) and
-    resizes to ``resize_size`` square uint8. Emits raw eef_pos + eef_quat (xyzw)
-    + gripper_qpos so the server's adapter builds the 10-dim rot6d state.
+    Matches training orientation: net image flip must be ``[::-1, ::-1]``
+    (both axes) relative to the raw robosuite ``agentview_image``. Callers
+    (``get_openpi_action_chunk`` / ``get_openpi_native_action_chunk``) have
+    already applied ``[::-1]`` (vertical) to the image before handing it
+    here as ``obs["agentview"]["images"]["rgb"]``, so this builder only
+    applies ``[:, ::-1]`` (horizontal) to complete the orientation match.
+
+    Emits raw eef_pos + eef_quat (xyzw) + gripper_qpos so the server's
+    ``libero_robosuite`` adapter builds the 10-dim rot6d state.
     """
     if resize_size < 1:
         raise ValueError("resize_size must be positive")
 
+    # Callers already applied [::-1] on the raw robosuite image; flip the
+    # remaining axis here so net flip = [::-1, ::-1] matches training.
     agent_rgb = np.ascontiguousarray(
-        np.asarray(obs["agentview"]["images"]["rgb"])[::-1, ::-1]
+        np.asarray(obs["agentview"]["images"]["rgb"])[:, ::-1]
     )
     wrist_rgb = np.ascontiguousarray(
-        np.asarray(obs["robot0_eye_in_hand"]["images"]["rgb"])[::-1, ::-1]
+        np.asarray(obs["robot0_eye_in_hand"]["images"]["rgb"])[:, ::-1]
     )
 
     if agent_rgb.dtype != np.uint8:
