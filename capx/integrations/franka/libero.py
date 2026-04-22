@@ -1119,3 +1119,21 @@ class FrankaLiberoVLANoSam3Api(FrankaLiberoApi):
             "close_gripper": self.close_gripper,
             "goto_home_joint_position": self.goto_home_joint_position,
         }
+
+
+class FrankaLiberoOneModelVLAApi(FrankaLiberoVLAApi):
+    """VLA-forward LIBERO API backed by one-model's PolicyServer.
+
+    Wire-contract is identical to OpenPI's LIBERO head (the one-model server
+    runs the ``libero_robosuite`` I/O adapter), so every tool inherited from
+    ``FrankaLiberoVLAApi`` works unchanged. The only difference is the
+    backend dispatch in ``_get_openpi_client`` / ``_build_vla_payload``.
+    """
+
+    _vla_backend: str = "one_model"
+
+
+class FrankaLiberoOneModelVLANoSam3Api(FrankaLiberoVLANoSam3Api):
+    """No-SAM3 one-model VLA API — VLA + motion primitives only."""
+
+    _vla_backend: str = "one_model"

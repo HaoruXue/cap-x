@@ -4,7 +4,9 @@ import json
 from typing import Any
 
 import numpy as np
+from PIL import Image
 
+from capx.utils.one_model import OneModelWebsocketClient
 from capx.utils.openpi import (
     DEFAULT_OPENPI_HOST,
     DEFAULT_OPENPI_PORT,
@@ -12,6 +14,71 @@ from capx.utils.openpi import (
     apply_libero_delta_action,
     build_openpi_libero_input,
 )
+
+
+def _build_one_model_libero_input(
+    obs: dict[str, Any],
+    *,
+    prompt: str,
+    raw_libero_obs: dict[str, Any] | None = None,
+    resize_size: int = 224,
+) -> dict[str, Any]:
+    """Build the robosuite-keyed payload the one-model libero_robosuite adapter expects.
+
+    Matches training orientation: flips images ``[::-1, ::-1]`` (both axes) and
+    resizes to ``resize_size`` square uint8. Emits raw eef_pos + eef_quat (xyzw)
+    + gripper_qpos so the server's adapter builds the 10-dim rot6d state.
+    """
+    if resize_size < 1:
+        raise ValueError("resize_size must be positive")
+
+    agent_rgb = np.ascontiguousarray(
+        np.asarray(obs["agentview"]["images"]["rgb"])[::-1, ::-1]
+    )
+    wrist_rgb = np.ascontiguousarray(
+        np.asarray(obs["robot0_eye_in_hand"]["images"]["rgb"])[::-1, ::-1]
+    )
+
+    if agent_rgb.dtype != np.uint8:
+        agent_rgb = np.clip(agent_rgb, 0, 255).astype(np.uint8)
+    if wrist_rgb.dtype != np.uint8:
+        wrist_rgb = np.clip(wrist_rgb, 0, 255).astype(np.uint8)
+
+    # Lightweight resize — only when needed.
+    if agent_rgb.shape[0] != resize_size or agent_rgb.shape[1] != resize_size:
+        agent_rgb = np.array(
+            Image.fromarray(agent_rgb).resize((resize_size, resize_size), Image.LANCZOS)
+        )
+    if wrist_rgb.shape[0] != resize_size or wrist_rgb.shape[1] != resize_size:
+        wrist_rgb = np.array(
+            Image.fromarray(wrist_rgb).resize((resize_size, resize_size), Image.LANCZOS)
+        )
+
+    if raw_libero_obs is not None and all(
+        key in raw_libero_obs for key in ("robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos")
+    ):
+        eef_pos = np.asarray(raw_libero_obs["robot0_eef_pos"], dtype=np.float32).reshape(3)
+        eef_quat = np.asarray(raw_libero_obs["robot0_eef_quat"], dtype=np.float32).reshape(4)
+        gripper_qpos = np.asarray(raw_libero_obs["robot0_gripper_qpos"], dtype=np.float32).reshape(-1)
+    else:
+        cart = np.asarray(obs["robot_cartesian_pos"], dtype=np.float64).reshape(-1)
+        eef_pos = cart[:3].astype(np.float32)
+        quat_wxyz = cart[3:7]
+        eef_quat = np.array(
+            [quat_wxyz[1], quat_wxyz[2], quat_wxyz[3], quat_wxyz[0]], dtype=np.float32
+        )
+        # Synth a two-finger qpos from the scalar gripper opening in robot_cartesian_pos[7].
+        # This will at worst marginally affect state encoding; real raw obs is preferred.
+        gripper_qpos = np.array([cart[7], cart[7]], dtype=np.float32)
+
+    return {
+        "agentview_image": agent_rgb,
+        "robot0_eye_in_hand_image": wrist_rgb,
+        "robot0_eef_pos": eef_pos,
+        "robot0_eef_quat": eef_quat,
+        "robot0_gripper_qpos": gripper_qpos,
+        "prompt": str(prompt),
+    }
 
 
 def infer_openpi_gripper_command(gripper_action: float, *, deadband: float = 0.05) -> str:
@@ -66,23 +133,66 @@ def build_openpi_subgoals(
 
 
 class FrankaLiberoOpenPIToolMixin:
-    """Shared OpenPI-backed VLA helpers for LIBERO Franka APIs."""
+    """Shared VLA helpers for LIBERO Franka APIs.
 
-    _openpi_client: OpenPIWebsocketClient | None
-    _openpi_client_endpoint: tuple[str, int] | None
+    Backwards-compatibly supports two backends behind the same tool names:
+    - ``"openpi"`` (default): upstream OpenPI websocket server.
+    - ``"one_model"``: one-model PolicyServer with the ``libero_robosuite``
+      I/O adapter. Wire contract is byte-identical to the OpenPI LIBERO head,
+      so every downstream tool (``plan_with_openpi``, ``execute_openpi_step``,
+      etc.) works unchanged.
+
+    Subclasses override ``_vla_backend`` (default ``"openpi"``) to select.
+    """
+
+    _openpi_client: OpenPIWebsocketClient | OneModelWebsocketClient | None
+    _openpi_client_endpoint: tuple[str, int, str] | None
+    _vla_backend: str = "openpi"
 
     def _get_openpi_client(
         self,
         host: str = DEFAULT_OPENPI_HOST,
         port: int = DEFAULT_OPENPI_PORT,
-    ) -> OpenPIWebsocketClient:
-        endpoint = (host, port)
+    ) -> OpenPIWebsocketClient | OneModelWebsocketClient:
+        backend = getattr(self, "_vla_backend", "openpi")
+        endpoint = (host, port, backend)
         if self._openpi_client is None or self._openpi_client_endpoint != endpoint:
             if self._openpi_client is not None:
                 self._openpi_client.close()
-            self._openpi_client = OpenPIWebsocketClient(host=host, port=port)
+            if backend == "one_model":
+                self._openpi_client = OneModelWebsocketClient(host=host, port=port)
+            elif backend == "openpi":
+                self._openpi_client = OpenPIWebsocketClient(host=host, port=port)
+            else:
+                raise ValueError(
+                    f"Unknown VLA backend {backend!r}; expected 'openpi' or 'one_model'."
+                )
             self._openpi_client_endpoint = endpoint
         return self._openpi_client
+
+    def _build_vla_payload(
+        self,
+        obs: dict[str, Any],
+        *,
+        prompt: str,
+        raw_libero_obs: dict[str, Any] | None,
+        resize_size: int,
+    ) -> dict[str, Any]:
+        """Build the wire payload appropriate for the active VLA backend."""
+        backend = getattr(self, "_vla_backend", "openpi")
+        if backend == "one_model":
+            return _build_one_model_libero_input(
+                obs,
+                prompt=prompt,
+                raw_libero_obs=raw_libero_obs,
+                resize_size=resize_size,
+            )
+        return build_openpi_libero_input(
+            obs,
+            prompt=prompt,
+            raw_libero_obs=raw_libero_obs,
+            resize_size=resize_size,
+        )
 
     def _resolve_openpi_prompt(self, prompt: str | None = None) -> str:
         if prompt is not None and prompt.strip():
@@ -170,7 +280,7 @@ class FrankaLiberoOpenPIToolMixin:
                 },
                 "robot_cartesian_pos": np.asarray(obs["robot_cartesian_pos"], dtype=np.float64),
             }
-        payload = build_openpi_libero_input(
+        payload = self._build_vla_payload(
             openpi_obs,
             prompt=self._resolve_openpi_prompt(prompt),
             raw_libero_obs=raw_obs,
@@ -179,12 +289,13 @@ class FrankaLiberoOpenPIToolMixin:
         response = self._get_openpi_client(host=host, port=port).infer(payload)
         actions = np.asarray(response["actions"], dtype=np.float64)
         if actions.ndim != 2 or actions.shape[1] < 7:
-            raise ValueError(f"Unexpected OpenPI action chunk shape: {actions.shape}")
+            raise ValueError(f"Unexpected VLA action chunk shape: {actions.shape}")
         trimmed = actions[:replan_steps, :7]
         self._emit_openpi_trace(
             "action_chunk",
             host=host,
             port=port,
+            backend=getattr(self, "_vla_backend", "openpi"),
             prompt=self._resolve_openpi_prompt(prompt),
             replan_steps=int(replan_steps),
             returned_steps=int(trimmed.shape[0]),
@@ -214,7 +325,7 @@ class FrankaLiberoOpenPIToolMixin:
                 "images": {"rgb": np.asarray(raw_obs["robot0_eye_in_hand_image"][::-1])},
             },
         }
-        payload = build_openpi_libero_input(
+        payload = self._build_vla_payload(
             openpi_obs,
             prompt=self._resolve_openpi_prompt(prompt),
             raw_libero_obs=raw_obs,
@@ -223,7 +334,7 @@ class FrankaLiberoOpenPIToolMixin:
         response = self._get_openpi_client(host=host, port=port).infer(payload)
         actions = np.asarray(response["actions"], dtype=np.float64)
         if actions.ndim != 2 or actions.shape[1] < 7:
-            raise ValueError(f"Unexpected OpenPI action chunk shape: {actions.shape}")
+            raise ValueError(f"Unexpected VLA action chunk shape: {actions.shape}")
         trimmed = actions[:replan_steps, :7]
         self._emit_openpi_trace(
             "native_action_chunk",

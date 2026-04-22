@@ -15,7 +15,13 @@ from .franka.handover_reduced_exampleless import FrankaHandoverApiReducedExample
 from .franka.two_arm_lift import FrankaTwoArmLiftApi
 from .franka.two_arm_lift_privileged import FrankaTwoArmLiftPrivilegedApi
 try:
-    from .franka.libero import FrankaLiberoApi, FrankaLiberoVLAApi, FrankaLiberoVLANoSam3Api
+    from .franka.libero import (
+        FrankaLiberoApi,
+        FrankaLiberoOneModelVLAApi,
+        FrankaLiberoOneModelVLANoSam3Api,
+        FrankaLiberoVLAApi,
+        FrankaLiberoVLANoSam3Api,
+    )
     from .franka.libero_privileged import FrankaLiberoPrivilegedApi
     from .franka.libero_reduced import (
         FrankaLiberoApiReduced,
@@ -135,6 +141,14 @@ if _libero_available:
     register_api("FrankaLiberoNoSam3Api", lambda env: FrankaLiberoApi(env, use_sam3=False))
     register_api("FrankaLiberoVLAApi", lambda env: FrankaLiberoVLAApi(env, use_sam3=True))
     register_api("FrankaLiberoVLANoSam3Api", lambda env: FrankaLiberoVLANoSam3Api(env, use_sam3=False))
+    register_api(
+        "FrankaLiberoOneModelVLAApi",
+        lambda env: FrankaLiberoOneModelVLAApi(env, use_sam3=True),
+    )
+    register_api(
+        "FrankaLiberoOneModelVLANoSam3Api",
+        lambda env: FrankaLiberoOneModelVLANoSam3Api(env, use_sam3=False),
+    )
     register_api("FrankaLiberoApiReduced", FrankaLiberoApiReduced)
     register_api("FrankaLiberoVLAApiReduced", FrankaLiberoVLAApiReduced)
     register_api("FrankaLiberoVLAMinimalApiReduced", FrankaLiberoVLAMinimalApiReduced)
