@@ -1128,12 +1128,44 @@ class FrankaLiberoOneModelVLAApi(FrankaLiberoVLAApi):
     runs the ``libero_robosuite`` I/O adapter), so every tool inherited from
     ``FrankaLiberoVLAApi`` works unchanged. The only difference is the
     backend dispatch in ``_get_openpi_client`` / ``_build_vla_payload``.
+
+    Exposes both ``execute_openpi_plan`` (IK-waypoint rollout) and
+    ``execute_openpi_native_plan`` (raw ``env.step(delta_action)`` rollout,
+    matches one-model's ``eval_libero_direct.py``) so prompts can choose.
     """
 
     _vla_backend: str = "one_model"
 
+    def functions(self) -> dict[str, Any]:
+        fns = super().functions()
+        fns.update(
+            {
+                "execute_openpi_native_plan": self.execute_openpi_native_plan,
+                "execute_openpi_native_step": self.execute_openpi_native_step,
+                "plan_with_openpi_native": self.plan_with_openpi_native,
+                "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            }
+        )
+        return fns
+
 
 class FrankaLiberoOneModelVLANoSam3Api(FrankaLiberoVLANoSam3Api):
-    """No-SAM3 one-model VLA API — VLA + motion primitives only."""
+    """No-SAM3 one-model VLA API — VLA + motion primitives only.
+
+    Same backend swap as ``FrankaLiberoOneModelVLAApi`` and also exposes
+    the native env-step rollout family.
+    """
 
     _vla_backend: str = "one_model"
+
+    def functions(self) -> dict[str, Any]:
+        fns = super().functions()
+        fns.update(
+            {
+                "execute_openpi_native_plan": self.execute_openpi_native_plan,
+                "execute_openpi_native_step": self.execute_openpi_native_step,
+                "plan_with_openpi_native": self.plan_with_openpi_native,
+                "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            }
+        )
+        return fns
