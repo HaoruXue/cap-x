@@ -408,3 +408,64 @@ The next intended comparisons are:
   --total-trials 20 \
   --output-dir ./outputs/object_swap_task6_hybrid_20trials_v4
 ```
+
+## one-model rot6d (step-100000) on LIBERO-PRO `libero_object_swap` — 20 trials per task, 4 workers, gemini-3.1-pro-preview
+
+**Setup:** full-suite sweep (all 10 tasks × 20 init states), 4 parallel workers sharing one one-model PolicyServer instance on GPU 4. Backend: one-model `PolicyServer` with `--io-adapter libero_robosuite` (adapter built in one-model PR #363) routed via cap-x `FrankaLiberoOneModel{VLANoSam3,VLA}Api` (cap-x PR #2).
+
+- Pure VLA config: `env_configs/libero/franka_libero_object_swap_one_model_pure_vla.yaml` (prompt tells the coding model to repeatedly call `execute_openpi_plan` with no perception setup).
+- Hybrid config: `env_configs/libero/franka_libero_object_swap_one_model_hybrid.yaml` (prompt tells the coding model to first localize the target with SAM3/Molmo, move the EEF to a top-down pregrasp via IK, then hand off to VLA).
+
+### Per-task success rates
+
+| Task                      | Pure VLA  | Hybrid     | Δ     |
+|---------------------------|-----------|------------|-------|
+| alphabet soup             | 20/20 100%| 19/20 95%  | -1    |
+| cream cheese              | 17/20 85% | 20/20 100% | +3    |
+| salad dressing            | 13/20 65% | 18/20 90%  | +5    |
+| bbq sauce                 | 13/20 65% | 19/20 95%  | +6    |
+| ketchup                   | 18/20 90% | 18/20 90%  | 0     |
+| tomato sauce              | 12/20 60% | 20/20 100% | +8    |
+| butter                    | 16/20 80% | 18/20 90%  | +2    |
+| milk                      | 13/20 65% | 17/20 85%  | +4    |
+| chocolate pudding         | 14/20 70% | 20/20 100% | +6    |
+| orange juice              | 14/20 70% | 19/20 95%  | +5    |
+| **Suite total**           | **150/200 75%** | **188/200 94%** | **+38 (+19 pp)** |
+
+### Headline
+
+- Pure-VLA on this one-model rot6d checkpoint is already a large uplift over the prior `pi05_libero` numbers in earlier sections of this file (e.g. salad dressing 0/20 → 13/20, milk 0/20 → 13/20, orange juice 3/20 → 14/20).
+- Hybrid (localize + IK pregrasp + VLA) adds another +19 pp on top, reaching 94% suite average. The uplift is concentrated on the weaker pure-VLA tasks: tomato sauce (+40 pp), bbq sauce (+30 pp), chocolate pudding (+30 pp).
+- Wall time per sweep was ~3.5 hours with 4 workers (≈ 60 s/trial).
+
+### Launch commands (reproduce)
+
+```bash
+# One-model server (GPU 4 port 8000)
+unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
+CUDA_VISIBLE_DEVICES=4 /k8s-nfs/personal/haoru/one/ws0/one-model/.venv/bin/python \
+  /k8s-nfs/personal/haoru/one/ws0/one-model/scripts/eval/serve.py \
+    --checkpoint <path/to/exports/step-100000> \
+    --robot panda_7dof_libero_rel_eef_rot6d \
+    --io-adapter libero_robosuite \
+    --host 127.0.0.1 --port 8000
+
+# Pure VLA full-suite sweep
+.venv-libero/bin/python capx/envs/scripts/run_libero_batch.py \
+  --args.base-config-path env_configs/libero/franka_libero_object_swap_one_model_pure_vla.yaml \
+  --args.suites libero_object_swap \
+  --args.models google/gemini-3.1-pro-preview \
+  --args.server-url http://127.0.0.1:8110/chat/completions \
+  --args.total-trials 20 --args.num-workers 4 \
+  --args.output-dir ./outputs/one_model_pure_vla_object_swap_full
+
+# Hybrid full-suite sweep — same but with the hybrid YAML
+.venv-libero/bin/python capx/envs/scripts/run_libero_batch.py \
+  --args.base-config-path env_configs/libero/franka_libero_object_swap_one_model_hybrid.yaml \
+  ...
+```
+
+Artefacts:
+- `outputs/one_model_pure_vla_object_swap_full/libero_object_swap/*/google_gemini-3.1-pro-preview/run/`
+- `outputs/one_model_hybrid_object_swap_full/libero_object_swap/*/google_gemini-3.1-pro-preview/run/`
+
