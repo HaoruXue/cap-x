@@ -1,0 +1,87 @@
+# LIBERO-PRO object_swap — pure VLA via OpenPI PolicyServer on port 8000.
+#
+# Prerequisites:
+#   1. source .venv-libero/bin/activate
+#   2. uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrouterkey --port 8110
+#   3. Start the OpenPI server on port 8000 with the  adapter:
+#      CUDA_VISIBLE_DEVICES=4 \
+#        /k8s-nfs/personal/haoru/one/ws0/OpenPI/.venv/bin/python \
+#        /k8s-nfs/personal/haoru/one/ws0/OpenPI/scripts/eval/serve.py \
+#          --checkpoint <path/to/exports/step-100000> \
+#          --robot panda_7dof_libero_rel_eef_rot6d \
+#          --io-adapter  \
+#          --host 127.0.0.1 --port 8000
+#   4. uv run --no-sync --active capx/envs/launch.py --config-path env_configs/libero/franka_libero_object_swap_openpi_pure_vla.yaml
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 6
+    privileged: false
+    apis:
+      - FrankaLiberoVLANoSam3Api
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+
+      You have a dedicated VLA policy exposed through the OpenPI-named tools.
+      The backend is OpenPI; the wire contract is identical, so use the
+      same tools as you would for OpenPI. PREFERRED STRATEGY: call
+      `execute_openpi_plan(replan_steps=10, execute_subgoals=5)` repeatedly
+      until the task completes. The VLA will return a short plan each call;
+      you should execute several subgoals per call to make steady progress.
+
+      Do not hand-craft motion plans. Do not call `goto_pose` unless the VLA
+      clearly fails after multiple attempts. Prefer repeated VLA calls over
+      `FINISH` — only `FINISH` once the observation visually confirms the
+      object is placed in the basket.
+
+      You may write python code comments for reasoning but ONLY write the
+      executable Python code and do not write it in code fences. After this
+      code executes, you will be able to get a new observation and write new
+      code to continue the task. The functions (APIs) below are already
+      imported; to use numpy, import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      If there were no errors during compilation or execution, the console
+      stderr will be empty. If there were errors, consider regenerating the
+      code.
+
+      Do not respond with `FINISH` unless the task is clearly complete. If
+      the robot has only made partial progress, or you have not explicitly
+      verified placement, continue with another `execute_openpi_plan` call.
+
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a
+        fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+record_video: true
+output_dir: ./outputs/franka_libero_object_swap_openpi_pure_vla
+save_multiturn_prompts: true
+
+trials: 20
+num_workers: 4
