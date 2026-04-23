@@ -490,3 +490,89 @@ Artefacts:
 - `outputs/one_model_hybrid_native_v2_object_swap_full/` — hybrid VLA native
 - `/tmp/capx-servers/eval_libero_direct_object_20/results_libero_object.json` — direct eval on base libero_object (reference)
 
+## IK-waypoint path (execute_openpi_plan) is INVALIDATED — scaling bug
+
+After a video audit (see `ik_success_audit.md` for sampled trial videos), the IK-waypoint path's high success rates (75-95%) were traced to a bug in `capx/utils/openpi.apply_libero_delta_action`:
+
+```python
+target_pos = current_pos + action[:3] * translation_scale  # translation_scale=1.0 default
+```
+
+VLA outputs are in OSC_POSE **normalized** units (roughly ±1, meant to be scaled by the controller's `output_max=0.05` → ~0.4 cm per step). The IK-waypoint path treats them as **raw meters** and adds them directly, producing ~20× position jumps. Sample positions from a "success" log: `[1.13, -0.05, 0.02]`, `[0.80, -0.10, 0.10]`, `[0.77, -0.25, 0.46]` — wildly outside the workspace.
+
+Audit of sampled "success" videos shows most IK-path wins are one of:
+- Arm flailing; object accidentally knocked into basket (LIBERO reward fires on predicate match, not on clean pick-and-place).
+- Crash-then-success: trajectory error mid-trial, but reward already hit 1.0 from an earlier accidental fling.
+- Object teleported into basket via physics glitch.
+
+**IK-waypoint numbers in this file do not represent VLA capability. Treat as upper-bound chaos-benchmark only.** Fix would be `translation_scale=0.05, rotation_scale=0.5` (OSC_POSE's `output_max`) or, better, route through native `env.step()` like `execute_openpi_native_plan`.
+
+## OpenPI pi05_libero on LIBERO-PRO `libero_object_swap` — 20 trials per task, gemini-3.1-pro-preview
+
+Same sweep methodology as the one-model section above. `pi05_libero` checkpoint served via cap-x's `capx/serving/launch_openpi_server.py` → upstream `openpi/scripts/serve_policy.py`. Coding agent routes through `execute_openpi_plan` (IK-waypoint, see bug above) or `execute_openpi_native_plan` (native `env.step`).
+
+### Per-task success rates
+
+| Task              | Clean        | Pure IK†     | Hybrid IK†    | Pure native  | Hybrid native |
+|-------------------|--------------|--------------|---------------|--------------|---------------|
+| alphabet soup     | 2/20 10%     | 12/20 60%    | 16/20 80%     | 4/20 20%     | 6/20 30%      |
+| cream cheese      | 3/20 15%     | 8/20 40%     | 20/20 100%    | 20/20 100%   | 20/20 100%    |
+| salad dressing    | 10/20 50%    | 16/20 80%    | 20/20 100%    | 0/20 0%      | 0/20 0%       |
+| bbq sauce         | 7/20 35%     | 18/20 90%    | 20/20 100%    | 0/20 0%      | 1/20 5%       |
+| ketchup           | 4/20 20%     | 12/20 60%    | 20/20 100%    | 0/20 0%      | 0/20 0%       |
+| tomato sauce      | 7/20 35%     | 12/20 60%    | 19/20 95%     | 0/20 0%      | 0/20 0%       |
+| butter            | 6/20 30%     | 12/20 60%    | 18/20 90%     | 10/20 50%    | 9/20 45%      |
+| milk              | 5/20 25%     | 16/20 80%    | 19/20 95%     | 0/20 0%      | 3/20 15%      |
+| chocolate pudding | 4/20 20%     | 14/20 70%    | 19/20 95%     | 0/20 0%      | 0/20 0%       |
+| orange juice      | 10/20 50%    | 18/20 90%    | 20/20 100%    | 3/20 15%     | 4/20 20%      |
+| **Suite total**   | 58/200 29%   | 138/200 69%† | 191/200 95.5%†| **37/200 18.5%** | **43/200 21.5%** |
+
+† IK-waypoint numbers are artifacts of the scaling bug documented above.
+
+### Summary of honest (native-only) numbers across all sweeps
+
+| VLA model            | Setting           | Total   | Rate      |
+|----------------------|-------------------|---------|-----------|
+| — (no VLA)           | Clean CaP-X       | 58/200  | **29.0%** |
+| OpenPI pi05_libero   | Pure VLA native   | 37/200  | **18.5%** |
+| OpenPI pi05_libero   | Hybrid VLA native | 43/200  | **21.5%** |
+| one-model rot6d step-100000 | Pure VLA native   | 86/200  | **43.0%** |
+| one-model rot6d step-100000 | Hybrid VLA native | 99/200  | **49.5%** |
+
+Reference: `eval_libero_direct.py` on base `libero_object` (easier non-perturbed suite), one-model rot6d step-100000 = **194/200 = 97%**.
+
+### Observations
+
+- **pi05_libero** is strongly bimodal under native rollout — 100% on cream cheese, 0% on 6 of the other 9 tasks. Checkpoint is not robust to LIBERO-PRO perturbations.
+- **one-model rot6d** is more uniformly competent under native rollout (~40-50%) but still materially below the 97% it achieves on the non-perturbed base suite.
+- Hybrid (IK pregrasp + VLA handoff) adds ~7 pp native on one-model and ~3 pp native on pi05 — small gain.
+- The IK-waypoint path's inflated numbers (up to 95%) reflect arm chaos landing objects in baskets, not actual VLA-driven manipulation.
+
+### Launch commands
+
+```bash
+# OpenPI server (GPU 4 port 8000)
+unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
+OPENPI_ROOT=/k8s-nfs/personal/haoru/one/ws0/openpi CUDA_VISIBLE_DEVICES=4 \
+  .venv-libero/bin/python capx/serving/launch_openpi_server.py \
+    --policy-config pi05_libero \
+    --policy-dir gs://openpi-assets/checkpoints/pi05_libero \
+    --port 8000
+
+# Pure VLA native full-suite
+OPENPI_ROOT=/k8s-nfs/personal/haoru/one/ws0/openpi \
+  .venv-libero/bin/python capx/envs/scripts/run_libero_batch.py \
+    --args.base-config-path env_configs/libero/franka_libero_object_swap_openpi_pure_vla_native.yaml \
+    --args.suites libero_object_swap \
+    --args.models google/gemini-3.1-pro-preview \
+    --args.server-url http://127.0.0.1:8110/chat/completions \
+    --args.total-trials 20 --args.num-workers 4 \
+    --args.output-dir ./outputs/openpi_pure_vla_native_object_swap_full
+```
+
+Artefacts:
+- `outputs/openpi_pure_vla_object_swap_full/`           pi05 pure-IK (invalidated)
+- `outputs/openpi_hybrid_object_swap_full/`             pi05 hybrid-IK (invalidated)
+- `outputs/openpi_pure_vla_native_object_swap_full/`    pi05 pure-native
+- `outputs/openpi_hybrid_native_object_swap_full/`      pi05 hybrid-native
+
