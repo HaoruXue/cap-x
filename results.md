@@ -409,39 +409,57 @@ The next intended comparisons are:
   --output-dir ./outputs/object_swap_task6_hybrid_20trials_v4
 ```
 
-## one-model rot6d (step-100000) on LIBERO-PRO `libero_object_swap` — 20 trials per task, 4 workers, gemini-3.1-pro-preview
+## one-model rot6d (step-100000) on LIBERO-PRO `libero_object_swap` — 20 trials per task, gemini-3.1-pro-preview
 
-**Setup:** full-suite sweep (all 10 tasks × 20 init states), 4 parallel workers sharing one one-model PolicyServer instance on GPU 4. Backend: one-model `PolicyServer` with `--io-adapter libero_robosuite` (adapter built in one-model PR #363) routed via cap-x `FrankaLiberoOneModel{VLANoSam3,VLA}Api` (cap-x PR #2).
+**Setup:** full-suite sweep (all 10 tasks × 20 init states), 4 parallel workers.
 
-- Pure VLA config: `env_configs/libero/franka_libero_object_swap_one_model_pure_vla.yaml` (prompt tells the coding model to repeatedly call `execute_openpi_plan` with no perception setup).
-- Hybrid config: `env_configs/libero/franka_libero_object_swap_one_model_hybrid.yaml` (prompt tells the coding model to first localize the target with SAM3/Molmo, move the EEF to a top-down pregrasp via IK, then hand off to VLA).
+cap-x exposes two different VLA execution paths. They produce very different numbers and the distinction matters:
+
+- **IK-waypoint path** (`execute_openpi_plan`): the VLA's 7-dim delta is composed into an absolute cartesian waypoint, then executed via cap-x's IK + joint-motion blocking move. The IK cleans up jitter and direction drift. **NOT apples-to-apples with one-model's `eval_libero_direct.py`.**
+- **Native path** (`execute_openpi_native_plan`): the VLA's 7-dim delta is passed straight into `env.step()` (OSC_POSE controller), matching `eval_libero_direct.py`'s rollout semantics. **This is the apples-to-apples number.**
+
+The IK-waypoint path over-estimates because cap-x's IK rescues the VLA from many failure modes (jitter, small direction errors, slow convergence). The native path shows what the checkpoint can actually drive through the cap-x wrapper.
 
 ### Per-task success rates
 
-| Task                      | Pure VLA  | Hybrid     | Δ     |
-|---------------------------|-----------|------------|-------|
-| alphabet soup             | 20/20 100%| 19/20 95%  | -1    |
-| cream cheese              | 17/20 85% | 20/20 100% | +3    |
-| salad dressing            | 13/20 65% | 18/20 90%  | +5    |
-| bbq sauce                 | 13/20 65% | 19/20 95%  | +6    |
-| ketchup                   | 18/20 90% | 18/20 90%  | 0     |
-| tomato sauce              | 12/20 60% | 20/20 100% | +8    |
-| butter                    | 16/20 80% | 18/20 90%  | +2    |
-| milk                      | 13/20 65% | 17/20 85%  | +4    |
-| chocolate pudding         | 14/20 70% | 20/20 100% | +6    |
-| orange juice              | 14/20 70% | 19/20 95%  | +5    |
-| **Suite total**           | **150/200 75%** | **188/200 94%** | **+38 (+19 pp)** |
+| Task              | Clean   | Pure VLA (IK)  | Hybrid VLA (IK) | Pure VLA (native) | Hybrid VLA (native) |
+|-------------------|---------|----------------|-----------------|-------------------|---------------------|
+| alphabet soup     | 2/20 10%| 20/20 100%     | 19/20 95%       | 13/20 65%         | 15/20 75%           |
+| cream cheese      | 3/20 15%| 17/20 85%      | 20/20 100%      | 8/20 40%          | 12/20 60%           |
+| salad dressing    | 10/20 50%| 13/20 65%     | 18/20 90%       | 1/20 5%           | 0/20 0%             |
+| bbq sauce         | 7/20 35%| 13/20 65%      | 19/20 95%       | 14/20 70%         | 15/20 75%           |
+| ketchup           | 4/20 20%| 18/20 90%      | 18/20 90%       | 0/20 0%           | 2/20 10%            |
+| tomato sauce      | 7/20 35%| 12/20 60%      | 20/20 100%      | 17/20 85%         | 18/20 90%           |
+| butter            | 6/20 30%| 16/20 80%      | 18/20 90%       | 8/20 40%          | 11/20 55%           |
+| milk              | 5/20 25%| 13/20 65%      | 17/20 85%       | 13/20 65%         | 18/20 90%           |
+| chocolate pudding | 4/20 20%| 14/20 70%      | 20/20 100%      | 8/20 40%          | 5/20 25%            |
+| orange juice      | 10/20 50%| 14/20 70%     | 19/20 95%       | 4/20 20%          | 3/20 15%            |
+| **Suite total**   | **58/200 29%** | **150/200 75%** | **188/200 94%** | **86/200 43%** | **99/200 50%** |
 
-### Headline
+### Reference: direct eval on BASE libero_object (not libero_object_swap)
 
-- Pure-VLA on this one-model rot6d checkpoint is already a large uplift over the prior `pi05_libero` numbers in earlier sections of this file (e.g. salad dressing 0/20 → 13/20, milk 0/20 → 13/20, orange juice 3/20 → 14/20).
-- Hybrid (localize + IK pregrasp + VLA) adds another +19 pp on top, reaching 94% suite average. The uplift is concentrated on the weaker pure-VLA tasks: tomato sauce (+40 pp), bbq sauce (+30 pp), chocolate pudding (+30 pp).
-- Wall time per sweep was ~3.5 hours with 4 workers (≈ 60 s/trial).
+`one-model/scripts/eval/eval_libero_direct.py` on BASE `libero_object` with this same checkpoint: **194/200 = 97%**. This is NOT directly comparable — `libero_object_swap` is a LIBERO-PRO perturbation benchmark built on `libero_object` and is significantly harder. But the 97% confirms the checkpoint itself is strong; the 43% on native `libero_object_swap` reflects both (a) the perturbation benchmark being harder and (b) cap-x adding some wrapper overhead vs an in-process rollout.
+
+### Takeaways
+
+- **Clean CaP-X (no VLA) is the baseline**: ~29% on LIBERO-PRO object-swap. The coding agent + classical perception + IK without a learned policy is weak on this perturbation benchmark.
+- **Pure VLA native is ~43%** — the honest "what happens when cap-x routes raw VLA deltas to the sim" number. Matches the ~45% one-model users report on their side.
+- **Hybrid VLA native is ~50%** — a modest +7 pp over pure VLA native, from the localize-and-pregrasp-with-IK preamble. The VLA still does the pick-and-place, but starting closer to the object.
+- **IK-waypoint path dramatically inflates numbers** (75% pure, 94% hybrid). This is useful as an upper bound for "what VLA + cap-x's motion machinery can achieve together", but it is NOT the VLA-only metric. The path remains available behind the `execute_openpi_plan` tool in case you want the combined capability.
+- The native path has two per-task disaster zones (ketchup and salad dressing, both near-zero for both pure and hybrid native), while IK-waypoint hits 65-90% on those same tasks. The coding agent + IK appear to be rescuing the VLA's direction errors on those specific perturbation configurations.
+
+### Known follow-up
+
+The native path went through two bugs before producing the numbers above:
+1. Image orientation in `_build_one_model_libero_input` (fix commit 61b9360).
+2. `MULTITURN_LIMIT=10` starving the native rollout of env-steps (fix via prompt: burst 20-30 native calls per code block).
+
+Both fixes are in cap-x PR #2. If you see very low numbers on a new task, first check that the coding agent is actually calling `execute_openpi_native_plan` many times per code block — that's the easy-to-miss failure mode.
 
 ### Launch commands (reproduce)
 
 ```bash
-# One-model server (GPU 4 port 8000)
+# One-model server (GPU 4 port 8000) with the libero_robosuite adapter (one-model PR #363)
 unset VIRTUAL_ENV UV_PROJECT_ENVIRONMENT
 CUDA_VISIBLE_DEVICES=4 /k8s-nfs/personal/haoru/one/ws0/one-model/.venv/bin/python \
   /k8s-nfs/personal/haoru/one/ws0/one-model/scripts/eval/serve.py \
@@ -450,22 +468,25 @@ CUDA_VISIBLE_DEVICES=4 /k8s-nfs/personal/haoru/one/ws0/one-model/.venv/bin/pytho
     --io-adapter libero_robosuite \
     --host 127.0.0.1 --port 8000
 
-# Pure VLA full-suite sweep
+# Pure VLA native full-suite
 .venv-libero/bin/python capx/envs/scripts/run_libero_batch.py \
-  --args.base-config-path env_configs/libero/franka_libero_object_swap_one_model_pure_vla.yaml \
+  --args.base-config-path env_configs/libero/franka_libero_object_swap_one_model_pure_vla_native.yaml \
   --args.suites libero_object_swap \
   --args.models google/gemini-3.1-pro-preview \
   --args.server-url http://127.0.0.1:8110/chat/completions \
   --args.total-trials 20 --args.num-workers 4 \
-  --args.output-dir ./outputs/one_model_pure_vla_object_swap_full
+  --args.output-dir ./outputs/one_model_pure_vla_native_v2_object_swap_full
 
-# Hybrid full-suite sweep — same but with the hybrid YAML
-.venv-libero/bin/python capx/envs/scripts/run_libero_batch.py \
-  --args.base-config-path env_configs/libero/franka_libero_object_swap_one_model_hybrid.yaml \
-  ...
+# Hybrid VLA native full-suite — same but with _hybrid_native.yaml
+# Clean CaP-X (no VLA) full-suite — same but with _clean_novla.yaml
+# IK-waypoint variants — use _pure_vla.yaml / _hybrid.yaml (no _native suffix)
 ```
 
 Artefacts:
-- `outputs/one_model_pure_vla_object_swap_full/libero_object_swap/*/google_gemini-3.1-pro-preview/run/`
-- `outputs/one_model_hybrid_object_swap_full/libero_object_swap/*/google_gemini-3.1-pro-preview/run/`
+- `outputs/clean_cap_x_object_swap_full/` — clean CaP-X
+- `outputs/one_model_pure_vla_object_swap_full/` — pure VLA IK-waypoint
+- `outputs/one_model_hybrid_object_swap_full/` — hybrid VLA IK-waypoint
+- `outputs/one_model_pure_vla_native_v2_object_swap_full/` — pure VLA native
+- `outputs/one_model_hybrid_native_v2_object_swap_full/` — hybrid VLA native
+- `/tmp/capx-servers/eval_libero_direct_object_20/results_libero_object.json` — direct eval on base libero_object (reference)
 
