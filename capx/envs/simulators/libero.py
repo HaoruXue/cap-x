@@ -373,7 +373,9 @@ class FrankaLiberoEnv(BaseEnv):
         self._current_info = dict(native_info)
         self._current_reward = float(native_reward)
         self._current_done = bool(native_done)
-        self._sim_step_count += 1
+        # Note: _sim_step_count is incremented per native sub-step by the
+        # calling loop in execute_openpi_native_actions / action. This method
+        # is the sync bookkeeping only; no per-sub-step counting here.
 
         self._current_joints = np.array(
             self.handle.env.sim.data.qpos[self._panda_joint_qpos_addrs], dtype=np.float64
@@ -398,9 +400,6 @@ class FrankaLiberoEnv(BaseEnv):
             else:
                 self._update_viser_robot_only()
 
-        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
-            self._record_frame()
-
         return self.get_observation(), self._current_reward, self._current_done, self._current_info
 
     def execute_openpi_native_action(
@@ -423,7 +422,12 @@ class FrankaLiberoEnv(BaseEnv):
             self.sync_openpi_native_from_primary()
 
         _, native_reward, native_done, native_info = native_handle.step(raw_action.tolist())
-        return self._sync_primary_from_openpi_native(native_reward, native_done, native_info)
+        # One sim tick per native step — count + record.
+        self._sim_step_count += 1
+        result = self._sync_primary_from_openpi_native(native_reward, native_done, native_info)
+        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
+            self._record_frame()
+        return result
 
     def execute_openpi_native_actions(
         self,
@@ -448,6 +452,11 @@ class FrankaLiberoEnv(BaseEnv):
         for action in action_chunk:
             native_obs, native_reward, native_done, native_info = native_handle.step(action.tolist())
             executed_steps += 1
+            # One sim tick per native sub-step — record accordingly so video
+            # playback stays at control-rate real time.
+            self._sim_step_count += 1
+            if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
+                self._record_frame()
             if native_done:
                 break
 
