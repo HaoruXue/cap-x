@@ -90,6 +90,9 @@ class FrankaLiberoEnv(BaseEnv):
         self._record_wrist_camera = False
         self._wrist_camera_name = "robot0_eye_in_hand"
         self._subsample_rate = 4
+        # Separate rate for video recording so real-time playback at fps=20
+        # matches control_freq=20 exactly. (Viser still uses _subsample_rate=4.)
+        self._video_subsample_rate = 1
         self._full_viser_rate = 20  # Full scene update every 20 steps (cameras + pointcloud)
 
         # Robot link indices for transforms
@@ -271,7 +274,7 @@ class FrankaLiberoEnv(BaseEnv):
                 else:
                     self._update_viser_robot_only()  # Fast robot-only
 
-            if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+            if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
                 self._record_frame()
 
             steps += 1
@@ -306,7 +309,7 @@ class FrankaLiberoEnv(BaseEnv):
         if self.viser_debug and self._sim_step_count % self._subsample_rate == 0:
             self._update_viser_robot_only()
 
-        if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
             self._record_frame()
 
     def _reset_openpi_native_handle(self, seed: int | None = None) -> dict[str, Any]:
@@ -395,7 +398,7 @@ class FrankaLiberoEnv(BaseEnv):
             else:
                 self._update_viser_robot_only()
 
-        if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
             self._record_frame()
 
         return self.get_observation(), self._current_reward, self._current_done, self._current_info
@@ -731,7 +734,19 @@ class FrankaLiberoEnv(BaseEnv):
         if not self._record_frames:
             return
 
-        frame = self.handle.env.sim.render(
+        # MuJoCo EGL bug: when a second MjSim (the native OSC_POSE handle used
+        # by execute_openpi_native_plan) coexists on the same GPU, the primary
+        # handle's sim.render() emits a corrupted buffer every ~2nd call
+        # (black bar across the bottom 32 rows). Workaround: when the native
+        # handle exists, sync its sim state from primary and render via
+        # native — its render context is unaffected.
+        render_handle = self.handle.env
+        if self._openpi_native_handle is not None:
+            state = self.handle.env.get_sim_state()
+            self._openpi_native_handle.env.regenerate_obs_from_state(state)
+            render_handle = self._openpi_native_handle.env
+
+        frame = render_handle.sim.render(
             camera_name="agentview",
             width=self._render_width,
             height=self._render_height,
@@ -740,7 +755,7 @@ class FrankaLiberoEnv(BaseEnv):
         self._frame_buffer.append(frame[::-1])  # Flip vertically
 
         if self._record_wrist_camera:
-            wrist_frame = self.handle.env.sim.render(
+            wrist_frame = render_handle.sim.render(
                 camera_name=self._wrist_camera_name,
                 width=self._render_width,
                 height=self._render_height,
