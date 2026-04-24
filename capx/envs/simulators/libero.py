@@ -422,12 +422,12 @@ class FrankaLiberoEnv(BaseEnv):
             self.sync_openpi_native_from_primary()
 
         _, native_reward, native_done, native_info = native_handle.step(raw_action.tolist())
-        # One sim tick per native step — count + record.
+        # One sim tick per native step — count + record from native's
+        # authoritative state BEFORE the primary sync.
         self._sim_step_count += 1
-        result = self._sync_primary_from_openpi_native(native_reward, native_done, native_info)
         if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
-            self._record_frame()
-        return result
+            self._record_frame(render_from_native=True)
+        return self._sync_primary_from_openpi_native(native_reward, native_done, native_info)
 
     def execute_openpi_native_actions(
         self,
@@ -452,11 +452,11 @@ class FrankaLiberoEnv(BaseEnv):
         for action in action_chunk:
             native_obs, native_reward, native_done, native_info = native_handle.step(action.tolist())
             executed_steps += 1
-            # One sim tick per native sub-step — record accordingly so video
-            # playback stays at control-rate real time.
+            # One sim tick per native sub-step — record from native's
+            # authoritative state (primary is stale until end-of-chunk sync).
             self._sim_step_count += 1
             if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
-                self._record_frame()
+                self._record_frame(render_from_native=True)
             if native_done:
                 break
 
@@ -739,21 +739,31 @@ class FrankaLiberoEnv(BaseEnv):
     def get_wrist_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
         return [frame.copy() for frame in self._wrist_frame_buffer[start:end]]
 
-    def _record_frame(self) -> None:
+    def _record_frame(self, *, render_from_native: bool = False) -> None:
+        """Capture a video frame from the current sim.
+
+        Args:
+            render_from_native: If True, render directly from the native
+                OSC_POSE handle without syncing — use this from inside the
+                native-action loop where native holds the authoritative
+                state. If False (default) we sync native from primary (when
+                native exists) to work around a MuJoCo EGL bug where primary
+                sim.render() corrupts its output every ~2nd call when two
+                MjSims coexist on the same GPU.
+        """
         if not self._record_frames:
             return
 
-        # MuJoCo EGL bug: when a second MjSim (the native OSC_POSE handle used
-        # by execute_openpi_native_plan) coexists on the same GPU, the primary
-        # handle's sim.render() emits a corrupted buffer every ~2nd call
-        # (black bar across the bottom 32 rows). Workaround: when the native
-        # handle exists, sync its sim state from primary and render via
-        # native — its render context is unaffected.
-        render_handle = self.handle.env
-        if self._openpi_native_handle is not None:
+        if render_from_native and self._openpi_native_handle is not None:
+            render_handle = self._openpi_native_handle.env
+        elif self._openpi_native_handle is not None:
+            # Primary motion happened; sync native from primary, then render
+            # via native to sidestep the EGL corruption on primary.
             state = self.handle.env.get_sim_state()
             self._openpi_native_handle.env.regenerate_obs_from_state(state)
             render_handle = self._openpi_native_handle.env
+        else:
+            render_handle = self.handle.env
 
         frame = render_handle.sim.render(
             camera_name="agentview",
