@@ -1,0 +1,109 @@
+# LIBERO-PRO object_swap — hybrid (tool + IK move-closer, then NATIVE VLA rollout).
+#
+# This is the apples-to-apples hybrid counterpart to
+# franka_libero_object_swap_one_model_hybrid.yaml. The pregrasp phase is
+# identical (perception + IK to move EEF near target). The handoff uses
+# execute_openpi_native_plan (raw env.step) rather than
+# execute_openpi_plan (IK-waypoint) — matches one-model's eval semantics.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 6
+    privileged: false
+    apis:
+      - FrankaLiberoOneModelVLAApi
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+
+      Strategy: hybrid tool-assisted VLA.
+
+      Phase 1 — localize + move closer (use perception + IK):
+      - `get_observation()` once.
+      - Localize the TARGET object (the thing to pick up) using
+        `get_object_3d_points_and_masks_from_language(...)` with 2-3 synonyms
+        for the object.
+      - Compute an approximate 3D center of the object from the returned points.
+      - Open gripper. Move the end effector to a top-down pregrasp roughly
+        5-10 cm above the object using `goto_pose`.
+
+      Phase 2 — hand off to VLA (NATIVE, raw env.step):
+      - Once the end effector is close above the target, burst a LARGE
+        number of native VLA rollout steps in a single code block.
+        cap-x's multi-turn cap is 10 code blocks; each VLA call is only
+        5 env steps, so run 20+ VLA calls per block to give the VLA
+        enough horizon. Example:
+
+            for _ in range(30):
+                execute_openpi_native_plan(replan_steps=5, execute_actions=5,
+                                            prompt="<exact task goal>")
+            # 150 env steps per block — enough for pick + place
+
+      - If not finished, re-observe and run another burst.
+
+      Important:
+      - The VLA is much more reliable when the end effector is already
+        close to the object. Move there first before the first VLA call.
+      - DO NOT repeatedly `goto_pose` in small increments; VLA handles
+        fine approach, grasp, and place.
+      - DO NOT call `FINISH` until the object is visually confirmed placed in
+        the target container.
+
+      You may write python code comments for reasoning but ONLY write the
+      executable Python code and do not write it in code fences. To use
+      numpy, import it explicitly.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      Evaluate progress:
+      - If the end effector is not yet above the target: re-localize and
+        `goto_pose` to a pregrasp.
+      - If the end effector is already above the target OR a prior VLA call
+        was partially successful: call `execute_openpi_native_plan` again.
+      - If the object appears to be in the target container: respond FINISH.
+
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a
+        fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+output_dir: ./outputs/franka_libero_object_swap_one_model_hybrid_native
+save_multiturn_prompts: true
+
+trials: 20
+num_workers: 4

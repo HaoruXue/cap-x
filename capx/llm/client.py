@@ -64,6 +64,7 @@ OPENROUTER_MODELS = [
     "openrouter/qwen/qwen3-235b-a22b",
 ]
 OPENROUTER_SERVER_URL = "http://localhost:8110/chat/completions"
+MODEL_ID_PREFIXES = {"aws", "azure", "gcp", "nvdev", "openai"}
 
 # ---------------------------------------------------------------------------
 # Ensemble configuration
@@ -73,7 +74,7 @@ ENSEMBLE_CONFIGS = [
     # Gemini-3-Pro only — best single model per CaP-Bench (Figure 1).
     # 3 temps for diversity; synthesis still uses Gemini-3-Pro.
     # ~45% faster than full multimodel (no Claude/GPT latency bottleneck).
-    ("openai/gpt-5.4", [0.1, 0.5, 0.9]),
+    ("openai/openai/gpt-5.4", [0.1, 0.5, 0.9]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,48 @@ ENSEMBLE_CONFIGS = [
 def is_openrouter_model(model: str) -> bool:
     """Return True if the model should be routed through the OpenRouter proxy."""
     return model.startswith("openrouter/") or model in OPENROUTER_MODELS
+
+
+def canonicalize_model_id(model: str) -> str:
+    """Normalize provider-prefixed model IDs for internal capability checks."""
+    if is_openrouter_model(model):
+        return model
+    parts = model.split("/")
+    if len(parts) >= 3 and parts[0] in MODEL_ID_PREFIXES:
+        return "/".join(parts[1:])
+    return model
+
+
+def _matches_model_family(model: str, known_models: list[str]) -> bool:
+    canonical_model = canonicalize_model_id(model)
+    return model in known_models or canonical_model in known_models
+
+
+def is_gpt_model(model: str) -> bool:
+    """Return True if the model should use GPT/OpenAI-style payload handling."""
+    return _matches_model_family(model, GPT_MODELS)
+
+
+def is_vlm_model(model: str) -> bool:
+    """Return True if the model supports image inputs for visual feedback."""
+    return _matches_model_family(model, VLM_MODELS)
+
+
+def is_claude_model(model: str) -> bool:
+    """Return True if the model uses Anthropic-style thinking payloads."""
+    return _matches_model_family(model, CLAUDE_MODELS)
+
+
+def is_oss_model(model: str) -> bool:
+    """Return True if the model is an OSS model served over chat completions."""
+    return _matches_model_family(model, OSS_MODELS)
+
+
+def resolve_server_url(model: str, server_url: str) -> str:
+    """Resolve the effective server URL for the given model."""
+    if is_openrouter_model(model):
+        return OPENROUTER_SERVER_URL
+    return server_url
 
 
 @dataclass
@@ -187,13 +230,9 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
         Model response content
     """
 
-    # Route OpenRouter models to the OpenRouter proxy server
-    if is_openrouter_model(args.model):
-        server_url = OPENROUTER_SERVER_URL
-    else:
-        server_url = args.server_url
+    server_url = resolve_server_url(args.model, args.server_url)
 
-    if args.model in GPT_MODELS:
+    if is_gpt_model(args.model):
         if "codex" in args.model:
             prompt = _completions_to_responses_convert_prompt(prompt)
             payload = {
@@ -214,7 +253,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
             "temperature": args.temperature,
             "max_tokens": args.max_tokens,
         }
-    elif args.model in CLAUDE_MODELS:
+    elif is_claude_model(args.model):
         payload = {
             "model": args.model,
             "temperature": args.temperature,
@@ -222,7 +261,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
             "thinking": {"type": "enabled", "budget_tokens": 4096},
             "messages": prompt,
         }
-    elif args.model in OSS_MODELS:
+    elif is_oss_model(args.model):
         payload = {
             "model": args.model,
             "messages": prompt,
@@ -239,18 +278,29 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
+    elif os.getenv("OPENAI_API_KEY") is not None and is_gpt_model(args.model):
         headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
     start_time = time.time()
 
-    # keep calling until it works
+    retryable_statuses = {404, 429, 500, 502, 503, 504}
+    retry = 1
+    max_retries = 6
     response = requests.post(
         server_url, headers=headers, data=json.dumps(payload), timeout=200
     )
-    retry = 1
-    while response.status_code in [404, 500, 502, 503, 504]:
-        sleep_time = 240 + random.uniform(-90, 90)
-        print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
+    while response.status_code in retryable_statuses and retry <= max_retries:
+        error_text = response.text
+        # NVIDIA proxy turns upstream 429s into 500s with a body mentioning 429.
+        is_rate_limit = response.status_code == 429 or "429" in error_text
+        if is_rate_limit:
+            sleep_time = min(30.0, 4.0 * retry + random.uniform(0.0, 3.0))
+        else:
+            sleep_time = min(60.0, 8.0 * retry + random.uniform(0.0, 5.0))
+        print(
+            "Retry "
+            f"{retry}/{max_retries}. Model query failed with status code {response.status_code}. "
+            f"Error: {error_text}. Retrying in {sleep_time:.1f} seconds..."
+        )
         time.sleep(sleep_time)
         response = requests.post(
             server_url, headers=headers, data=json.dumps(payload), timeout=200
@@ -265,7 +315,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     if args.debug:
         print(json.dumps(body, indent=2))
     try:
-        if args.model in GPT_MODELS and "codex" in args.model:
+        if is_gpt_model(args.model) and "codex" in args.model:
             out["content"] = body["output_text"]
         else:
             out["content"] = body["choices"][0]["message"]["content"]
@@ -296,7 +346,9 @@ def query_model_streaming(
     Yields:
         Partial response chunks as they arrive
     """
-    if args.model in GPT_MODELS:
+    server_url = resolve_server_url(args.model, args.server_url)
+
+    if is_gpt_model(args.model):
         payload = {
             "model": args.model,
             "reasoning_effort": args.reasoning_effort,
@@ -304,7 +356,7 @@ def query_model_streaming(
             "messages": prompt,
             "stream": True,
         }
-    elif args.model in CLAUDE_MODELS:
+    elif is_claude_model(args.model):
         payload = {
             "model": args.model,
             "temperature": args.temperature,
@@ -325,7 +377,7 @@ def query_model_streaming(
     headers = {"Content-Type": "application/json"}
     if args.api_key:
         headers["Authorization"] = f"Bearer {args.api_key}"
-    elif os.getenv("OPENAI_API_KEY") is not None and args.model in GPT_MODELS:
+    elif os.getenv("OPENAI_API_KEY") is not None and is_gpt_model(args.model):
         headers["Authorization"] = f"Bearer {os.getenv('OPENAI_API_KEY')}"
 
     full_content = ""
@@ -334,7 +386,7 @@ def query_model_streaming(
     start_time = time.time()
 
     with requests.post(
-        args.server_url,
+        server_url,
         headers=headers,
         data=json.dumps(payload),
         timeout=200,
@@ -437,7 +489,7 @@ def query_model_streaming(
 def query_model_ensemble(
     args: "LaunchArgs | ModelQueryArgs",
     prompt: list[dict],
-    synthesis_model: str = "openai/gpt-5.4",
+    synthesis_model: str = "openai/openai/gpt-5.4",
     is_multiturn = False
 ) -> dict[str, Any]:
     """Query 9 models (3 models x 3 temperatures) and synthesize final output."""

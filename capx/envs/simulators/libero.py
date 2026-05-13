@@ -18,7 +18,7 @@ from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import depth_color_to_pointcloud
 
 here = os.path.dirname(os.path.abspath(__file__))
-vendor_root = os.path.normpath(os.path.join(here, "..", "third_party", "LIBERO"))
+vendor_root = os.path.normpath(os.path.join(here, "..", "..", "third_party", "LIBERO-PRO"))
 if os.path.isdir(vendor_root) and vendor_root not in sys.path:
     sys.path.append(vendor_root)
 # try:
@@ -29,6 +29,10 @@ from libero.utils import get_libero_path  # type: ignore[import-not-found]
 #     raise ModuleNotFoundError(
 #         "LIBERO not available; add submodule or run `uv sync --extra libero`."
 #     ) from e
+
+
+OPENPI_NATIVE_RENDER_RESOLUTION = 256
+OPENPI_NATIVE_DUMMY_ACTION = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0], dtype=np.float64)
 
 
 class FrankaLiberoEnv(BaseEnv):
@@ -76,6 +80,8 @@ class FrankaLiberoEnv(BaseEnv):
         self._current_info = None
         self._current_reward = None
         self._current_done = None
+        self._openpi_native_handle = None
+        self._last_reset_seed = seed
 
         # Video capture
         self._record_frames = False
@@ -84,6 +90,9 @@ class FrankaLiberoEnv(BaseEnv):
         self._record_wrist_camera = False
         self._wrist_camera_name = "robot0_eye_in_hand"
         self._subsample_rate = 4
+        # Separate rate for video recording so real-time playback at fps=20
+        # matches control_freq=20 exactly. (Viser still uses _subsample_rate=4.)
+        self._video_subsample_rate = 1
         self._full_viser_rate = 20  # Full scene update every 20 steps (cameras + pointcloud)
 
         # Robot link indices for transforms
@@ -149,22 +158,25 @@ class FrankaLiberoEnv(BaseEnv):
     def reset(
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        self._last_reset_seed = seed
+        env_seed = self.seed if self.seed is not None else seed
         if seed is not None:
             # NOTE: currently not used
             self._rng = np.random.default_rng(seed)
 
-        # We call handle.reset, but then we might want to override the init state
-        libero_obs, libero_info = self.handle.reset(seed=seed)
-        
-        # Override the init state based on the seed (which corresponds to trial ID)
+        # Match upstream LIBERO/OpenPI reset semantics:
+        # 1. env.reset()
+        # 2. env.set_init_state(init_states[episode_idx])
+        libero_obs, libero_info = self.handle.reset(seed=env_seed)
+
+        # Map seed/trial ID onto an init-state index for single-trial CaP-X execution.
         if self.handle.init_states is not None and len(self.handle.init_states) > 0:
             if seed is not None:
-                # Assuming seed is the trial number (1-based)
                 state_idx = (seed - 1) % len(self.handle.init_states)
-                self.handle.env.set_init_state(self.handle.init_states[state_idx])
-                # Reset simulation again to apply the new init state
-                libero_obs = self.handle.env.reset()
-                libero_info = {}
+            else:
+                state_idx = 0
+            libero_obs = self.handle.set_init_state_for_index(state_idx)
+            libero_info = {}
 
         self._current_obs = libero_obs
         self._current_info = libero_info
@@ -192,6 +204,9 @@ class FrankaLiberoEnv(BaseEnv):
         # Update viser immediately so the 3D view reflects the reset state
         if self.viser_debug:
             self._update_viser_server()
+
+        if self._openpi_native_handle is not None:
+            self._reset_openpi_native_handle(seed=seed)
 
         info = {"task_prompt": self.handle.task_language}
         return obs, info
@@ -259,7 +274,7 @@ class FrankaLiberoEnv(BaseEnv):
                 else:
                     self._update_viser_robot_only()  # Fast robot-only
 
-            if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+            if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
                 self._record_frame()
 
             steps += 1
@@ -294,8 +309,163 @@ class FrankaLiberoEnv(BaseEnv):
         if self.viser_debug and self._sim_step_count % self._subsample_rate == 0:
             self._update_viser_robot_only()
 
-        if self._record_frames and self._sim_step_count % self._subsample_rate == 0:
+        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
             self._record_frame()
+
+    def _reset_openpi_native_handle(self, seed: int | None = None) -> dict[str, Any]:
+        """Reset the native OpenPI env with the same init-state and settle policy as upstream LIBERO."""
+        if self._openpi_native_handle is None:
+            raise RuntimeError("OpenPI native handle is not initialized.")
+
+        native_handle = self._openpi_native_handle
+        env_seed = self.seed if self.seed is not None else seed
+        native_obs, _ = native_handle.reset(seed=env_seed)
+        if native_handle.init_states is not None and len(native_handle.init_states) > 0 and seed is not None:
+            state_idx = (seed - 1) % len(native_handle.init_states)
+            native_obs = native_handle.set_init_state_for_index(state_idx)
+        elif native_handle.init_states is not None and len(native_handle.init_states) > 0:
+            native_obs = native_handle.set_init_state_for_index(0)
+
+        for _ in range(10):
+            native_obs, _, _, _ = native_handle.step(OPENPI_NATIVE_DUMMY_ACTION.tolist())
+        return native_obs
+
+    def _get_openpi_native_handle(self):
+        """Lazily construct an OSC_POSE LIBERO env for exact native OpenPI execution."""
+        if self._openpi_native_handle is None:
+            self._openpi_native_handle = load_libero_task(
+                suite_name=self.handle.suite_name,
+                task_id=self.handle.task_id,
+                cam_w=OPENPI_NATIVE_RENDER_RESOLUTION,
+                cam_h=OPENPI_NATIVE_RENDER_RESOLUTION,
+                controller="OSC_POSE",
+                horizon=self.max_steps,
+                control_freq=self._control_freq,
+            )
+            self._reset_openpi_native_handle(seed=self._last_reset_seed)
+        return self._openpi_native_handle
+
+    def sync_openpi_native_from_primary(self) -> dict[str, Any]:
+        """Overwrite the native OpenPI env state from the current primary CaP-X env state."""
+        native_handle = self._get_openpi_native_handle()
+        current_state = self.handle.env.get_sim_state()
+        return native_handle.env.regenerate_obs_from_state(current_state)
+
+    def get_openpi_native_raw_obs(self, *, sync_from_primary: bool = False) -> dict[str, Any]:
+        """Return the raw LIBERO observation from the native OSC_POSE OpenPI env."""
+        native_handle = self._get_openpi_native_handle()
+        if sync_from_primary:
+            return self.sync_openpi_native_from_primary()
+        current_state = native_handle.env.get_sim_state()
+        return native_handle.env.regenerate_obs_from_state(current_state)
+
+    def _sync_primary_from_openpi_native(
+        self,
+        native_reward: float,
+        native_done: bool,
+        native_info: dict[str, Any],
+    ) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
+        native_handle = self._get_openpi_native_handle()
+        new_state = native_handle.env.get_sim_state()
+        primary_obs = self.handle.env.regenerate_obs_from_state(new_state)
+
+        self._current_obs = primary_obs
+        self._current_info = dict(native_info)
+        self._current_reward = float(native_reward)
+        self._current_done = bool(native_done)
+        # Note: _sim_step_count is incremented per native sub-step by the
+        # calling loop in execute_openpi_native_actions / action. This method
+        # is the sync bookkeeping only; no per-sub-step counting here.
+
+        self._current_joints = np.array(
+            self.handle.env.sim.data.qpos[self._panda_joint_qpos_addrs], dtype=np.float64
+        )
+        self._gripper_fraction = float(
+            np.clip(
+                self._current_obs["robot0_gripper_qpos"][0] / self.gripper_metric_length,
+                0.0,
+                1.0,
+            )
+        )
+        self.gripper_link_wxyz_xyz = np.concatenate(
+            [
+                self.handle.env.sim.data.xquat[self.gripper_link_idx],
+                self.handle.env.sim.data.xpos[self.gripper_link_idx],
+            ]
+        )
+
+        if self.viser_debug and self._sim_step_count % self._subsample_rate == 0:
+            if self._sim_step_count % self._full_viser_rate == 0:
+                self._update_viser_server()
+            else:
+                self._update_viser_robot_only()
+
+        return self.get_observation(), self._current_reward, self._current_done, self._current_info
+
+    def execute_openpi_native_action(
+        self,
+        action: np.ndarray,
+        *,
+        sync_from_primary: bool = False,
+    ) -> tuple[dict[str, Any], float, bool, dict[str, Any]]:
+        """Execute one raw OpenPI 7D action using a synced OSC_POSE LIBERO env.
+
+        This mirrors upstream OpenPI evaluation much more closely than routing the
+        delta through IK and `goto_pose`.
+        """
+        raw_action = np.asarray(action, dtype=np.float64).reshape(-1)
+        if raw_action.shape != (7,):
+            raise ValueError(f"Expected OpenPI action shape (7,), got {raw_action.shape}")
+
+        native_handle = self._get_openpi_native_handle()
+        if sync_from_primary:
+            self.sync_openpi_native_from_primary()
+
+        _, native_reward, native_done, native_info = native_handle.step(raw_action.tolist())
+        # One sim tick per native step — count + record from native's
+        # authoritative state BEFORE the primary sync.
+        self._sim_step_count += 1
+        if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
+            self._record_frame(render_from_native=True)
+        return self._sync_primary_from_openpi_native(native_reward, native_done, native_info)
+
+    def execute_openpi_native_actions(
+        self,
+        actions: np.ndarray,
+        *,
+        sync_from_primary: bool = False,
+    ) -> tuple[dict[str, Any], float, bool, dict[str, Any], int]:
+        """Execute a sequence of raw OpenPI actions in the native OSC_POSE env."""
+        action_chunk = np.asarray(actions, dtype=np.float64)
+        if action_chunk.ndim != 2 or action_chunk.shape[1] != 7:
+            raise ValueError(f"Expected action chunk shape (N, 7), got {action_chunk.shape}")
+
+        native_handle = self._get_openpi_native_handle()
+        if sync_from_primary:
+            self.sync_openpi_native_from_primary()
+
+        native_obs = None
+        native_reward = 0.0
+        native_done = False
+        native_info: dict[str, Any] = {}
+        executed_steps = 0
+        for action in action_chunk:
+            native_obs, native_reward, native_done, native_info = native_handle.step(action.tolist())
+            executed_steps += 1
+            # One sim tick per native sub-step — record from native's
+            # authoritative state (primary is stale until end-of-chunk sync).
+            self._sim_step_count += 1
+            if self._record_frames and self._sim_step_count % self._video_subsample_rate == 0:
+                self._record_frame(render_from_native=True)
+            if native_done:
+                break
+
+        if native_obs is None:
+            raise RuntimeError("No native OpenPI actions were executed.")
+        obs, reward, done, info = self._sync_primary_from_openpi_native(
+            native_reward, native_done, native_info
+        )
+        return obs, reward, done, info, executed_steps
 
     def _get_object_pose(self, obj_name: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the pose of an object in the environment as a position (3,) and WXYZ quaternion (4,).
@@ -483,8 +653,11 @@ class FrankaLiberoEnv(BaseEnv):
             if camera_name + "_image" in self._current_obs:
                 obs[camera_name]["images"]["rgb"] = self._current_obs[camera_name + "_image"][::-1]
             if camera_name + "_depth" in self._current_obs:
+                depth_buffer = np.asarray(self._current_obs[camera_name + "_depth"][::-1])
+                depth_buffer = np.nan_to_num(depth_buffer, nan=1.0, posinf=1.0, neginf=0.0)
+                depth_buffer = np.clip(depth_buffer, 0.0, 1.0)
                 depth_metric = get_real_depth_map(
-                    self.handle.env.sim, self._current_obs[camera_name + "_depth"][::-1]
+                    self.handle.env.sim, depth_buffer
                 )
                 obs[camera_name]["images"]["depth"] = depth_metric
             if camera_name + "_segmentation_" + self.segmentation_level in self._current_obs:
@@ -566,11 +739,33 @@ class FrankaLiberoEnv(BaseEnv):
     def get_wrist_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
         return [frame.copy() for frame in self._wrist_frame_buffer[start:end]]
 
-    def _record_frame(self) -> None:
+    def _record_frame(self, *, render_from_native: bool = False) -> None:
+        """Capture a video frame from the current sim.
+
+        Args:
+            render_from_native: If True, render directly from the native
+                OSC_POSE handle without syncing — use this from inside the
+                native-action loop where native holds the authoritative
+                state. If False (default) we sync native from primary (when
+                native exists) to work around a MuJoCo EGL bug where primary
+                sim.render() corrupts its output every ~2nd call when two
+                MjSims coexist on the same GPU.
+        """
         if not self._record_frames:
             return
 
-        frame = self.handle.env.sim.render(
+        if render_from_native and self._openpi_native_handle is not None:
+            render_handle = self._openpi_native_handle.env
+        elif self._openpi_native_handle is not None:
+            # Primary motion happened; sync native from primary, then render
+            # via native to sidestep the EGL corruption on primary.
+            state = self.handle.env.get_sim_state()
+            self._openpi_native_handle.env.regenerate_obs_from_state(state)
+            render_handle = self._openpi_native_handle.env
+        else:
+            render_handle = self.handle.env
+
+        frame = render_handle.sim.render(
             camera_name="agentview",
             width=self._render_width,
             height=self._render_height,
@@ -579,7 +774,7 @@ class FrankaLiberoEnv(BaseEnv):
         self._frame_buffer.append(frame[::-1])  # Flip vertically
 
         if self._record_wrist_camera:
-            wrist_frame = self.handle.env.sim.render(
+            wrist_frame = render_handle.sim.render(
                 camera_name=self._wrist_camera_name,
                 width=self._render_width,
                 height=self._render_height,

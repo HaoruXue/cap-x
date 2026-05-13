@@ -104,6 +104,7 @@ See [docs/behavior-tasks.md](docs/behavior-tasks.md) for task details and expect
 uv sync --extra verl             # RL training with VeRL/GRPO
 uv sync --extra contactgraspnet  # Contact-GraspNet grasp planning
 uv sync --extra curobo           # cuRobo GPU-accelerated IK & motion planning (requires CUDA)
+uv sync --extra molmo            # Molmo2 pointing server for object-centric perception
 ```
 
 ## Quick Start
@@ -142,6 +143,35 @@ uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrout
 
 See [docs/configuration.md](docs/configuration.md) for all provider options (OpenRouter, vLLM, custom).
 
+### Optional: OpenPI policy server
+
+CaP-X also includes an OpenPI launcher for cases where you want to run an upstream OpenPI websocket policy server alongside the rest of the repo tooling.
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi && uv sync
+
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --port 8000
+```
+
+This is separate from the LLM proxy path above: OpenPI exposes a websocket robot-policy server with `GET /healthz`, not an OpenAI-compatible `/chat/completions` endpoint.
+
+With the LIBERO APIs, OpenPI can also be used as a first-class CaP-X tool via `plan_with_openpi(...)`, `execute_openpi_step(...)`, and `execute_openpi_plan(...)` instead of only exposing raw action chunks.
+
+LIBERO object-centric perception can also depend on a Molmo2 pointing server on `127.0.0.1:8122`.
+Run that from the base `.venv` because the `molmo` extra is kept separate from `.venv-libero`:
+
+```bash
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
+    --trust-remote-code \
+    --port 8122 \
+    --max-num-batched-tokens 36864 \
+    --dtype bfloat16 \
+    --limit-mm-per-prompt.image 2
+```
+
 ### 3. Run evaluation
 
 ```bash
@@ -160,6 +190,15 @@ source .venv-libero/bin/activate
 uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/libero/franka_libero_spatial_0.yaml \
     --model "google/gemini-3.1-pro-preview"
+
+# LIBERO-PRO: VLA-forward CaP-X eval with OpenPI available as a tool
+source .venv-libero/bin/activate
+uv run --no-sync --active capx/envs/launch.py \
+    --config-path env_configs/libero/franka_libero_object_swap_vla_eval.yaml \
+    --model "<openrouter-model-id>" \
+    --server-url http://127.0.0.1:8110/chat/completions \
+    --total-trials 5 \
+    --num-workers 1
 
 # BEHAVIOR: R1Pro radio pickup (20 trials) — requires b1k venv
 source capx/third_party/b1k/.venv/bin/activate
@@ -190,6 +229,8 @@ uv run --no-sync --active capx/envs/launch.py \
 | [Adding Environments](docs/adding-environments.md) | Creating simulators, task environments, YAML configs |
 | [Adding APIs](docs/adding-apis.md) | Implementing and registering new robot control APIs |
 | [Configuration](docs/configuration.md) | YAML format, CLI flags, LLM provider setup |
+| [Hybrid VLA Notes](docs/hybrid.md) | What worked for combined CaP-X + OpenPI, prompt guidance, launch recipes, and failure modes |
+| [LIBERO / OpenPI Migration Playbook](docs/libero-openpi-playbook.md) | Machine setup, service launch order, alignment checks, experiment recipes, operational notes |
 | [LIBERO-PRO Tasks](docs/libero-tasks.md) | Setup, running any of 130+ LIBERO tasks, suite reference |
 | [BEHAVIOR Tasks](docs/behavior-tasks.md) | Setup, R1Pro tasks, expected baselines, environment variables |
 | [Development](docs/development.md) | Testing, linting, LIBERO/GraspNet setup, checkpoints, known issues |

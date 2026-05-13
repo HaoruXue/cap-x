@@ -16,7 +16,7 @@ uv sync --active --extra libero --extra contactgraspnet
 
 # 3. Set up an LLM proxy (needed for code generation)
 echo "sk-or-v1-your-key" > .openrouterkey
-python capx/serving/openrouter_server.py --key-file .openrouterkey --port 8110
+uv run --no-sync --active capx/serving/openrouter_server.py --key-file .openrouterkey --port 8110
 ```
 
 > **Note:** The PyRoKi IK server (port 8116) is auto-started by the YAML config. No manual setup needed.
@@ -42,7 +42,7 @@ EOF
 
 ```bash
 source .venv-libero/bin/activate
-python capx/envs/launch.py \
+uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/libero/franka_libero_spatial_0.yaml \
     --web-ui True
 ```
@@ -51,10 +51,97 @@ python capx/envs/launch.py \
 
 ```bash
 source .venv-libero/bin/activate
-python capx/envs/launch.py \
+uv run --no-sync --active capx/envs/launch.py \
     --config-path env_configs/libero/franka_libero_spatial_0.yaml \
     --total-trials 10
 ```
+
+### CaP-X with OpenPI as a tool
+
+Use the VLA-forward config when you want the coding agent to treat OpenPI as a first-class tool inside the CaP-X loop rather than only calling raw action-chunk helpers.
+
+```bash
+source .venv-libero/bin/activate
+
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --port 8000
+
+uv run --no-sync --active capx/envs/launch.py \
+    --config-path env_configs/libero/franka_libero_object_swap_vla_eval.yaml \
+    --model <openrouter-model-id> \
+    --server-url http://127.0.0.1:8110/chat/completions \
+    --total-trials 5 \
+    --num-workers 1
+```
+
+This config uses `FrankaLiberoVLAApiReduced`, which exposes:
+- `plan_with_openpi(...)` to inspect OpenPI's short-horizon Cartesian plan.
+- `execute_openpi_step(...)` to query OpenPI and execute one interpreted subgoal.
+- `execute_openpi_plan(...)` to execute a short sequence of subgoals through CaP-X's own IK / motion stack.
+- `get_openpi_server_info(...)` to confirm which OpenPI endpoint the run is using.
+
+## Reproducing OpenPI On LIBERO
+
+For a faithful OpenPI baseline, use the upstream OpenPI websocket policy server and run evaluation against LIBERO directly instead of through the CaP-X code-generation loop.
+
+### Standard LIBERO suites
+
+OpenPI upstream reports the following numbers for checkpoint `gs://openpi-assets/checkpoints/pi05_libero` with config `pi05_libero`: `98.8` on `libero_spatial`, `98.2` on `libero_object`, `98.0` on `libero_goal`, and `92.4` on `libero_10`.
+
+Launch the policy server from a separate OpenPI checkout:
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi
+uv sync
+
+OPENPI_ROOT=/path/to/openpi \
+uv run --project /root/cap-x --no-sync capx/serving/launch_openpi_server.py \
+    --policy-config pi05_libero \
+    --policy-dir gs://openpi-assets/checkpoints/pi05_libero \
+    --port 8000
+```
+
+Then run evaluation from the CaP-X LIBERO environment:
+
+```bash
+cd /root/cap-x
+source .venv-libero/bin/activate
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_spatial \
+    --port 8000
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_object \
+    --port 8000
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_goal \
+    --port 8000
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_10 \
+    --port 8000
+```
+
+### LIBERO-PRO suites
+
+The same evaluation script can also target LIBERO-PRO benchmark names exposed by the vendored `LIBERO-PRO` package, for example:
+
+```bash
+source .venv-libero/bin/activate
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_object_swap \
+    --port 8000
+
+uv run --no-sync --active capx/envs/scripts/run_openpi_libero_eval.py \
+    --task-suite-name libero_spatial_swap \
+    --port 8000
+```
+
+> **Important:** the current vendored `LIBERO-PRO` tree does not contain all perturbation suites and init states. In this checkout, `libero_object_swap` and `libero_spatial_swap` are the safest locally-backed PRO suites to start with; some `*_task`, `*_goal_swap`, and broader perturbation suites may require pulling additional upstream assets first.
 
 ## Choosing a Task
 
@@ -184,9 +271,11 @@ env:
 | API | Description |
 |-----|-------------|
 | `FrankaLiberoPrivilegedApi` | Ground-truth object poses, IK-based control (privileged) |
-| `FrankaLiberoApi` | Perception-based control with SAM3 + GraspNet (requires servers) |
-| `FrankaLiberoApiReduced` | Low-level abstractions for perception and control functions (requires servers) |
-| `FrankaLiberoApiReducedSkillLibrary` | Low-level abstractions for perception and control functions + extra utility functions from automatically synthesized skill library (requires servers) |
+| `FrankaLiberoApi` | Perception-based control with SAM3 + GraspNet, plus OpenPI/VLA helpers including `plan_with_openpi()`, `execute_openpi_step()`, and the lower-level raw action helpers |
+| `FrankaLiberoVLAApi` | Same capabilities as `FrankaLiberoApi`, but with the OpenPI/VLA tools surfaced first in the prompt for VLA-centric runs |
+| `FrankaLiberoApiReduced` | Reduced perception/control API, plus the same OpenPI/VLA planning and execution helpers |
+| `FrankaLiberoVLAApiReduced` | Reduced API variant that prioritizes the VLA tool surface in prompts; used by `franka_libero_object_swap_vla_eval.yaml` |
+| `FrankaLiberoApiReducedSkillLibrary` | Low-level abstractions for perception and control functions + extra utility functions from automatically synthesized skill library, plus the same OpenPI/VLA helpers |
 
 ## Using CuRobo
 To use CuRobo uncomment the following functions in the API you want to use (i.e. `capx/integrations/franka/libero.py`, `capx/integrations/franka/libero_reduced.py`).

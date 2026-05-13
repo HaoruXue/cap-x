@@ -1,0 +1,81 @@
+# Goal-generic minimal hybrid for LIBERO-PRO spatial-swap tasks.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_spatial_swap
+      task_id: 0
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      OpenPI is a short-horizon local prior, not a global planner. For spatial-swap tasks:
+      - localize the plate first
+      - localize the target bowl described by Goal
+      - do not hardcode task-0 relations like "between the plate and the ramekin" unless Goal actually says that
+      - prefer `point_prompt_molmo` with the full Goal, or with the exact relational bowl phrase from Goal, then refine with `segment_sam3_point_prompt`
+      - once the target bowl is localized, move to a top-down hover directly above it and call one meaningful `execute_openpi_native_plan(prompt=Goal, replan_steps=5, execute_actions=5)`
+      - re-observe
+      - if the bowl is clearly on the plate, finish
+      - only if OpenPI clearly failed, do one short explicit recovery
+
+      Examples:
+      - If Goal says "Pick the black bowl next to the ramekin and place it on the plate", use the full Goal to disambiguate that bowl, then one meaningful OpenPI attempt.
+      - If Goal says "Pick the black bowl on the stove and place it on the plate", use the full Goal to localize the stove bowl, not the ramekin-side bowl.
+
+      Keep the code short. Do not build large perception or retry frameworks.
+      Do not reduce OpenPI to repeated one-step calls.
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      Prefer one meaningful OpenPI attempt after target confirmation.
+      If OpenPI already failed once, stop repeating it.
+      Use the exact full Goal again if you call OpenPI.
+      Keep the next code block short and direct.
+      Only respond with `FINISH` if task_completed is true or the bowl is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_spatial_swap_vla_minimal_v2
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 3
+num_workers: 1

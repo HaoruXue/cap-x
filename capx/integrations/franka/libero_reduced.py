@@ -23,10 +23,12 @@ from capx.integrations.franka.common import (
     open_gripper as _open_gripper,
     solve_ik_with_convergence,
 )
+from capx.integrations.franka.openpi_tooling import FrankaLiberoOpenPIToolMixin
 from capx.integrations.vision.graspnet import init_contact_graspnet, init_contact_graspnet_point_clouds
 from capx.integrations.vision.molmo import init_molmo
 from capx.integrations.vision.sam3 import init_sam3, init_sam3_point_prompt
 from capx.integrations.motion.pyroki import init_pyroki
+from capx.utils.openpi import OpenPIWebsocketClient
 
 from capx.utils.camera_utils import obs_get_rgb
 from capx.utils.depth_utils import (
@@ -49,7 +51,7 @@ def _get_curobo_api():
 from sklearn.cluster import DBSCAN
 
 # ------------------------------- Control API ------------------------------
-class FrankaLiberoApiReduced(ApiBase):
+class FrankaLiberoApiReduced(FrankaLiberoOpenPIToolMixin, ApiBase):
     """Robot control helpers for Franka.
     """
     _TCP_OFFSET = np.array([0.0, 0.0, -0.1], dtype=np.float64)
@@ -70,6 +72,8 @@ class FrankaLiberoApiReduced(ApiBase):
         self.camera_name = "agentview"
         self.wrist_camera_name = "robot0_eye_in_hand"
         self.cfg = None
+        self._openpi_client: OpenPIWebsocketClient | None = None
+        self._openpi_client_endpoint: tuple[str, int] | None = None
 
         # JIT warmup: trigger JAX compilation with a dummy IK call
         try:
@@ -84,6 +88,15 @@ class FrankaLiberoApiReduced(ApiBase):
     def functions(self) -> dict[str, Any]:
         fns = {}
         fns["get_observation"] = self.get_observation
+        fns["get_openpi_server_info"] = self.get_openpi_server_info
+        fns["plan_with_openpi"] = self.plan_with_openpi
+        fns["get_openpi_native_action_chunk"] = self.get_openpi_native_action_chunk
+        fns["plan_with_openpi_native"] = self.plan_with_openpi_native
+        fns["execute_openpi_step"] = self.execute_openpi_step
+        fns["execute_openpi_raw_action"] = self.execute_openpi_raw_action
+        fns["execute_openpi_native_step"] = self.execute_openpi_native_step
+        fns["execute_openpi_native_plan"] = self.execute_openpi_native_plan
+        fns["execute_openpi_plan"] = self.execute_openpi_plan
         fns["segment_sam3_text_prompt"] = self.segment_sam3_text_prompt
         fns["segment_sam3_point_prompt"] = self.segment_sam3_point_prompt
         fns["point_prompt_molmo"] = self.point_prompt_molmo
@@ -101,6 +114,8 @@ class FrankaLiberoApiReduced(ApiBase):
         fns["goto_home_joint_position"] = self.goto_home_joint_position
         fns["subsample_point_cloud"] = self.subsample_point_cloud
         fns["filter_noise"] = self.filter_noise
+        fns["get_openpi_action_chunk"] = self.get_openpi_action_chunk
+        fns["get_openpi_subgoal"] = self.get_openpi_subgoal
 
         # # CuRobo, uncomment these for the coding agent to use them!
         # fns["parse_grasp_poses_for_curobo"] = self.parse_grasp_poses_for_curobo
@@ -214,6 +229,177 @@ class FrankaLiberoApiReduced(ApiBase):
         """
         return self.molmo_point_fn(Image.fromarray(image), objects=[text_prompt])
 
+    def locate_prompt_object(
+        self,
+        prompt: str,
+        text_fallbacks: list[str] | None = None,
+        camera_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Locate an object in the current observation via Molmo point prompt plus SAM3 refinement."""
+        obs = self.get_observation()
+        cam_name = camera_name or self.camera_name
+        cam = obs[cam_name]
+        rgb = cam["images"]["rgb"]
+        depth = cam["images"]["depth"]
+        intrinsics = cam["intrinsics"]
+        pose_mat = cam["pose_mat"]
+
+        candidates: list[tuple[float, np.ndarray]] = []
+        prompt_points = self.point_prompt_molmo(rgb, prompt)
+        if isinstance(prompt_points, dict):
+            for pt in prompt_points.values():
+                if pt is None or pt[0] is None or pt[1] is None:
+                    continue
+                point_masks = self.segment_sam3_point_prompt(rgb, (float(pt[0]), float(pt[1])))
+                for result in point_masks:
+                    mask = result.get("mask")
+                    if mask is None:
+                        continue
+                    score = float(result.get("score", 0.0))
+                    area = float(np.sum(mask))
+                    candidates.append((score + 1e-6 * area, np.asarray(mask).astype(bool)))
+
+        for text_prompt in text_fallbacks or [prompt]:
+            text_masks = self.segment_sam3_text_prompt(rgb, text_prompt)
+            for result in text_masks:
+                mask = result.get("mask")
+                if mask is None:
+                    continue
+                score = float(result.get("score", 0.0))
+                area = float(np.sum(mask))
+                candidates.append((score + 1e-6 * area, np.asarray(mask).astype(bool)))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        best_score, best_mask = candidates[0]
+        points_world = self.mask_to_world_points(best_mask, depth, intrinsics, pose_mat)
+        if points_world.shape[0] == 0:
+            return None
+        points_world = points_world[np.isfinite(points_world).all(axis=1)]
+        if points_world.shape[0] == 0:
+            return None
+        points_world = self.subsample_point_cloud(points_world, max_points=5000)
+        points_world, _ = self.filter_noise(points_world, None)
+        if points_world is None or points_world.shape[0] == 0:
+            return None
+
+        center_world = np.median(points_world, axis=0)
+        top_z = float(np.max(points_world[:, 2]))
+        return {
+            "mask": best_mask,
+            "points_world": points_world,
+            "center_world": center_world,
+            "top_z": top_z,
+            "score": best_score,
+        }
+
+    def goto_topdown_above(self, world_xyz: np.ndarray, dz: float = 0.12) -> None:
+        """Move to a top-down hover pose above a world point."""
+        target = np.asarray(world_xyz, dtype=np.float64).copy()
+        target[2] += dz
+        quat = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+        self.goto_pose(target, quat)
+
+    def execute_openpi_local_pick_and_place(
+        self,
+        goal_prompt: str,
+        target_prompts: list[str],
+        basket_prompts: list[str] | None = None,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8000,
+        replan_steps: int = 3,
+        execute_actions: int = 3,
+        hover_dz: float = 0.10,
+        grasp_dz: float = 0.015,
+        lift_dz: float = 0.16,
+        place_dz: float = 0.12,
+        stage_before_openpi: bool = True,
+    ) -> dict[str, Any]:
+        """Run a constrained local hybrid pattern: hover, one VLA burst, verify pickup, then place."""
+        basket_prompts = basket_prompts or ["basket", "woven basket", "square woven basket"]
+        target_queries = list(dict.fromkeys(target_prompts or [goal_prompt]))
+
+        def locate_target() -> tuple[dict[str, Any] | None, str]:
+            ordered_queries = sorted(target_queries, key=lambda text: (-len(text), text))
+            for query in ordered_queries:
+                result = self.locate_prompt_object(query, target_prompts)
+                if result is not None:
+                    return result, query
+            fallback_query = target_queries[0] if target_queries else goal_prompt
+            return None, fallback_query
+
+        basket = self.locate_prompt_object("basket", basket_prompts)
+        target_before, target_query = locate_target() if stage_before_openpi else (None, target_queries[0])
+
+        if target_before is not None:
+            self.open_gripper()
+            self.goto_topdown_above(np.asarray(target_before["center_world"], dtype=np.float64), dz=hover_dz)
+
+        openpi_result = self.execute_openpi_native_plan(
+            prompt=goal_prompt,
+            host=host,
+            port=port,
+            replan_steps=replan_steps,
+            execute_actions=execute_actions,
+        )
+
+        obs_after = self.get_observation()
+        target_after, target_query = locate_target()
+        gripper_open_fraction = float(obs_after["robot_cartesian_pos"][-1])
+        ee_xyz = np.asarray(obs_after["robot_cartesian_pos"][:3], dtype=np.float64)
+
+        picked = False
+        if target_after is None:
+            picked = gripper_open_fraction < 0.35
+        elif target_before is not None:
+            moved_up = float(target_after["center_world"][2]) > float(target_before["center_world"][2]) + 0.03
+            near_gripper = np.linalg.norm(np.asarray(target_after["center_world"], dtype=np.float64) - ee_xyz) < 0.08
+            picked = gripper_open_fraction < 0.35 and (moved_up or near_gripper)
+
+        if target_after is not None and not picked:
+            target_xyz = np.asarray(target_after["center_world"], dtype=np.float64)
+            self.open_gripper()
+            self.goto_topdown_above(target_xyz, dz=hover_dz)
+            grasp_xyz = target_xyz.copy()
+            grasp_xyz[2] = float(target_after["top_z"]) + grasp_dz
+            topdown_q = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+            self.goto_pose(grasp_xyz, topdown_q, z_approach=0.0)
+            self.close_gripper()
+            lift_xyz = grasp_xyz.copy()
+            lift_xyz[2] = float(target_after["top_z"]) + lift_dz
+            self.goto_pose(lift_xyz, topdown_q)
+
+            obs_verify = self.get_observation()
+            target_verify, target_query = locate_target()
+            gripper_open_fraction = float(obs_verify["robot_cartesian_pos"][-1])
+            ee_xyz = np.asarray(obs_verify["robot_cartesian_pos"][:3], dtype=np.float64)
+            if target_verify is None:
+                picked = gripper_open_fraction < 0.35
+            else:
+                moved_up = float(target_verify["center_world"][2]) > float(target_xyz[2]) + 0.03
+                near_gripper = np.linalg.norm(np.asarray(target_verify["center_world"], dtype=np.float64) - ee_xyz) < 0.08
+                picked = gripper_open_fraction < 0.35 and (moved_up or near_gripper)
+
+        if picked and basket is not None:
+            basket_xyz = np.asarray(basket["center_world"], dtype=np.float64)
+            self.goto_topdown_above(basket_xyz, dz=place_dz + 0.06)
+            topdown_q = np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float64)
+            place_xyz = basket_xyz.copy()
+            place_xyz[2] = float(basket["top_z"]) + place_dz
+            self.goto_pose(place_xyz, topdown_q, z_approach=0.0)
+            self.open_gripper()
+            self.goto_topdown_above(basket_xyz, dz=place_dz + 0.06)
+
+        return {
+            "picked": picked,
+            "target_visible_after": target_after is not None,
+            "basket_found": basket is not None,
+            "openpi_result": openpi_result,
+        }
+
     def get_oriented_bounding_box_from_3d_points(self, points: np.ndarray) -> dict[str, Any]:
         """Get the oriented bounding box from 3D points.
 
@@ -232,6 +418,37 @@ class FrankaLiberoApiReduced(ApiBase):
             >>> obb = get_oriented_bounding_box_from_3d_points(points)
         """
         return _get_obb(points)
+
+    def mask_to_world_points(
+        self, mask: np.ndarray, depth: np.ndarray, intrinsics: np.ndarray, extrinsics: np.ndarray
+    ) -> np.ndarray:
+        """Convert a binary mask into 3D points in the world frame."""
+        ys, xs = np.where(mask > 0)
+        if len(ys) == 0:
+            return np.empty((0, 3))
+
+        if depth.ndim == 3:
+            depth = depth[:, :, 0]
+
+        z_vals = depth[ys, xs]
+        valid = np.isfinite(z_vals) & (z_vals > 0)
+        ys = ys[valid]
+        xs = xs[valid]
+        z = z_vals[valid]
+        if len(z) == 0:
+            return np.empty((0, 3))
+
+        fx = intrinsics[0, 0]
+        fy = intrinsics[1, 1]
+        cx = intrinsics[0, 2]
+        cy = intrinsics[1, 2]
+
+        x_cam = (xs - cx) * z / fx
+        y_cam = (ys - cy) * z / fy
+        points_cam = np.stack([x_cam, y_cam, z], axis=-1)
+        points_cam_hom = np.hstack([points_cam, np.ones((len(points_cam), 1))])
+        points_world_hom = (extrinsics @ points_cam_hom.T).T
+        return points_world_hom[:, :3]
 
     # --------------------------------------------------------------------- #
     # Grasp planner (Contact-GraspNet)
@@ -892,3 +1109,66 @@ class FrankaLiberoApiReduced(ApiBase):
             **kwargs,
         )
         return success, joint_traj
+
+
+class FrankaLiberoVLAApiReduced(FrankaLiberoApiReduced):
+    """VLA-forward reduced LIBERO API that prioritizes OpenPI planning/execution tools."""
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            "plan_with_openpi_native": self.plan_with_openpi_native,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_raw_action": self.execute_openpi_raw_action,
+            "execute_openpi_native_step": self.execute_openpi_native_step,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "execute_openpi_plan": self.execute_openpi_plan,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
+            "goto_pose": self.goto_pose,
+            "goto_home_joint_position": self.goto_home_joint_position,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+            "segment_sam3_text_prompt": self.segment_sam3_text_prompt,
+            "segment_sam3_point_prompt": self.segment_sam3_point_prompt,
+            "point_prompt_molmo": self.point_prompt_molmo,
+            "plan_grasp": self.plan_grasp,
+            "plan_grasp_from_point_clouds": self.plan_grasp_from_point_clouds,
+            "get_oriented_bounding_box_from_3d_points": self.get_oriented_bounding_box_from_3d_points,
+            "solve_ik": self.solve_ik,
+            "move_to_joints": self.move_to_joints,
+            "subsample_point_cloud": self.subsample_point_cloud,
+            "filter_noise": self.filter_noise,
+        }
+
+
+class FrankaLiberoVLAMinimalApiReduced(FrankaLiberoApiReduced):
+    """Minimal LIBERO VLA API to reduce tool-search complexity for hybrid runs.
+
+    Exposes only the observation, a small perception surface, native OpenPI tools,
+    and a few basic motion primitives. The goal is to discourage the coding model
+    from expanding into large custom control stacks when the experiment is about
+    VLA + light explicit reasoning rather than full hand-written policy code.
+    """
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "execute_openpi_local_pick_and_place": self.execute_openpi_local_pick_and_place,
+            "segment_sam3_text_prompt": self.segment_sam3_text_prompt,
+            "segment_sam3_point_prompt": self.segment_sam3_point_prompt,
+            "point_prompt_molmo": self.point_prompt_molmo,
+            "locate_prompt_object": self.locate_prompt_object,
+            "mask_to_world_points": self.mask_to_world_points,
+            "subsample_point_cloud": self.subsample_point_cloud,
+            "filter_noise": self.filter_noise,
+            "goto_topdown_above": self.goto_topdown_above,
+            "goto_pose": self.goto_pose,
+            "goto_home_joint_position": self.goto_home_joint_position,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+        }

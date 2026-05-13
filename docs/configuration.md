@@ -86,6 +86,52 @@ uv run --no-sync --active capx/serving/launch_servers.py --profile default
 | `full` | default + OWL-ViT (8118) + SAM2 (8113) | Yes (~14 GB VRAM) |
 | `minimal` | PyRoKi (8116) only | No (CPU-only) |
 
+### OpenPI policy server
+
+CaP-X can also launch an upstream [OpenPI](https://github.com/Physical-Intelligence/openpi) websocket policy server through a thin wrapper in `capx/serving`.
+
+This is a separate policy-serving path from the OpenAI-compatible LLM proxies below:
+- OpenPI serves robot actions over websocket plus `GET /healthz`
+- OpenRouter/vLLM serve LLM generations over `POST /chat/completions`
+
+Set up OpenPI in its own checkout first:
+
+```bash
+git clone --recurse-submodules https://github.com/Physical-Intelligence/openpi.git /path/to/openpi
+cd /path/to/openpi
+uv sync
+```
+
+Then launch it through CaP-X:
+
+```bash
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py --env libero --port 8000
+```
+
+To serve a custom checkpoint instead of a built-in OpenPI environment preset:
+
+```bash
+OPENPI_ROOT=/path/to/openpi \
+uv run --no-sync --active capx/serving/launch_openpi_server.py \
+    --policy-config pi05_libero \
+    --policy-dir gs://openpi-assets/checkpoints/pi05_libero \
+    --port 8000
+```
+
+The wrapper:
+- Runs OpenPI in the OpenPI project environment via `uv run --project`
+- Waits for `http://127.0.0.1:<port>/healthz` before reporting readiness
+- Forwards SIGINT and SIGTERM so shutdown behaves like the other CaP-X launchers
+
+When a LIBERO config uses `FrankaLiberoApi`, `FrankaLiberoApiReduced`, `FrankaLiberoVLAApi`, or `FrankaLiberoVLAApiReduced`, the coding agent can treat OpenPI as a first-class tool instead of only reading raw action chunks. The main tool-facing helpers are:
+- `get_openpi_server_info(...)` to verify which OpenPI endpoint is active
+- `plan_with_openpi(...)` to lift the VLA action chunk into Cartesian subgoals
+- `execute_openpi_step(...)` to query OpenPI and execute a single interpreted subgoal
+- `execute_openpi_plan(...)` to execute a short OpenPI-guided sequence through CaP-X's own IK / motion stack
+
+See `env_configs/libero/franka_libero_object_swap_vla_eval.yaml` for a VLA-forward LIBERO-PRO example config.
+
 ## Adding new LLM providers
 
 CaP-X queries language models through a local proxy server that exposes an OpenAI-compatible `/chat/completions` endpoint.
@@ -104,10 +150,42 @@ CaP-X queries language models through a local proxy server that exposes an OpenA
 
 OpenRouter provides access to Gemini, GPT, Claude, DeepSeek, Qwen, and other models through a single API key.
 
+### NVIDIA Inference
+
+NVIDIA Inference can be used through the local proxy in `capx/serving/nv_server.py`.
+
+1. Save one or more NVIDIA keys:
+   ```bash
+   printf '%s\n%s\n' 'nvapi-key-1' 'nvapi-key-2' > .nvinferencekey
+   ```
+2. Launch the proxy:
+   ```bash
+   uv run --no-sync --active capx/serving/nv_server.py --key-file .nvinferencekey --port 8110
+   ```
+3. Use provider-qualified model IDs. Important examples:
+   ```text
+   openai/openai/gpt-5.4
+   gcp/google/gemini-3.1-pro-preview
+   ```
+
+The NVIDIA proxy supports key rotation across multiple keys in the file. If all keys are rate-limited, requests can still fail with upstream `429`.
+
 ### Option B: vLLM (local models)
 
 ```bash
 uv run python -m capx.serving.vllm_server --model Qwen/Qwen2.5-Coder-7B-Instruct --port 8080 --tensor-parallel-size 4
+```
+
+For Molmo2-backed pointing used by some LIBERO perception flows:
+
+```bash
+source .venv/bin/activate
+CUDA_VISIBLE_DEVICES=0 uv run --active --no-sync vllm serve allenai/Molmo2-8B \
+  --trust-remote-code \
+  --port 8122 \
+  --max-num-batched-tokens 36864 \
+  --dtype bfloat16 \
+  --limit-mm-per-prompt.image 2
 ```
 
 ### Option C: Custom providers

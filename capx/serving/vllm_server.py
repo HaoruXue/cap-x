@@ -20,8 +20,10 @@ class Args:
     tensor_parallel_size: int = 1
     gpu_memory_utilization: float = 0.9
     max_model_len: int | None = None
+    max_num_batched_tokens: int | None = None
     download_dir: str | None = None
     log_file: str | None = None
+    trust_remote_code: bool = False
 
 
 def _build_command(args: Args) -> list[str]:
@@ -44,8 +46,12 @@ def _build_command(args: Args) -> list[str]:
     ]
     if args.max_model_len is not None:
         cmd.extend(["--max-model-len", str(args.max_model_len)])
+    if args.max_num_batched_tokens is not None:
+        cmd.extend(["--max-num-batched-tokens", str(args.max_num_batched_tokens)])
     if args.download_dir:
         cmd.extend(["--download-dir", args.download_dir])
+    if args.trust_remote_code:
+        cmd.append("--trust-remote-code")
     return cmd
 
 

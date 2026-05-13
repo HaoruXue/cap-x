@@ -1,0 +1,95 @@
+# LIBERO-PRO spatial-swap task 0 with native OpenPI used only as a local subtask prior.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_spatial_swap
+      task_id: 0
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAApiReduced
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+
+      OpenPI is trained on LIBERO task-language instructions. If you use OpenPI, preserve the exact goal string above.
+      Do not paraphrase it.
+
+      Important guidance for this LIBERO-PRO task:
+      - treat VLA as a short-horizon local subtask prior, not as a full-workspace planner
+      - VLA location generation can be weak if the end effector is not already near the correct bowl / local region
+      - VLA works better once the robot is already above the target object
+
+      Preferred strategy:
+      - use explicit perception code to identify the correct bowl and target placement region
+      - move to a clean local pregrasp state above the correct bowl first
+      - then call `execute_openpi_native_step()` or a very short `execute_openpi_native_plan(...)` as a local pickup prior
+      - once the bowl is securely grasped, use explicit code for placement
+      - if OpenPI drifts toward the wrong bowl or local region, stop using it and recover explicitly
+
+      You may write python code comments for reasoning but ONLY write executable Python code and do not write it in code fences.
+      After this code executes, you will be able to get a new observation of the environment and write new code to complete the task if needed.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      Goal: {libero_environment_goal}
+
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      Task status after that execution:
+      - reward: {reward}
+      - task_completed: {task_completed}
+      - terminated: {terminated}
+      - truncated: {truncated}
+
+      For this LIBERO-PRO task, use VLA only as a local pickup subroutine.
+      If the robot is not already in a good local pregrasp state over the correct bowl, prefer explicit perception / motion code first.
+      If VLA already failed once from a good local state, stop repeating it and recover with explicit code.
+      Only respond with `FINISH` if `task_completed` is true or the object is clearly placed correctly.
+      Otherwise default to `REGENERATE`.
+
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_spatial_swap_0_vla_native_localprior
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 1
+num_workers: 1

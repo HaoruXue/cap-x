@@ -54,6 +54,7 @@ class FrankaLiberoApiReducedSkillLibrary(FrankaLiberoApiReduced):
 
         return fns
 
+
     # SKILL LIBRARY - Reusable Functions from LLM Robot Code Generation
     # ======================================================================
     # Source: reduced_api and reduced_api_exampleless experiments
@@ -363,3 +364,31 @@ class FrankaLiberoApiReducedSkillLibrary(FrankaLiberoApiReduced):
                     best_grasp = g_world
 
         return best_grasp, best_score
+
+
+class FrankaLiberoApiReducedSkillLibraryNoVLA(FrankaLiberoApiReducedSkillLibrary):
+    """Clean non-VLA LIBERO reduced skill-library API.
+
+    This matches the reduced skill-library surface but hides any OpenPI helpers so
+    generated code cannot call VLA tools during baseline reproduction.
+    """
+
+    _OPENPI_FNS = {
+        "get_openpi_server_info",
+        "plan_with_openpi",
+        "get_openpi_native_action_chunk",
+        "plan_with_openpi_native",
+        "execute_openpi_step",
+        "execute_openpi_raw_action",
+        "execute_openpi_native_step",
+        "execute_openpi_native_plan",
+        "execute_openpi_plan",
+        "get_openpi_action_chunk",
+        "get_openpi_subgoal",
+    }
+
+    def functions(self) -> dict[str, Any]:
+        fns = super().functions()
+        for name in self._OPENPI_FNS:
+            fns.pop(name, None)
+        return fns

@@ -29,9 +29,7 @@ try:
     register_env("two_arm_handover_robosuite", RobosuiteHandoverEnv)
     register_env("two_arm_lift_robosuite", RobosuiteTwoArmLiftEnv)
 except Exception:
-    import traceback
     print("Robosuite not installed!")
-    traceback.print_exc()
 
 # NOTE: Can only have one of LIBERO or Robosuite installed at a time!
 # Using LIBERO run: uv sync --extra libero --extra contactgraspnet

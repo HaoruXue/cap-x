@@ -1,0 +1,98 @@
+# Butter hybrid v4: stronger butter prompts and stricter pickup gating.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 6
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: Pick the butter and place it in the basket
+
+      If you call OpenPI, call it with exactly this prompt string:
+      `Pick the butter and place it in the basket`
+
+      Preferred pattern:
+      - get one observation
+      - localize basket first
+      - localize butter with a compact helper that tries prompts in this order:
+        - `stick of butter`
+        - `butter`
+        - `butter package`
+        - `yellow butter`
+        - `Goal`
+      - prefer `point_prompt_molmo` plus `segment_sam3_point_prompt`, then fallback to `segment_sam3_text_prompt`
+      - it is fine to define one short `localize(...)` helper
+      - if the target exists:
+        - open gripper
+        - move the end effector to a top-down pregrasp slightly above the butter
+        - only once the end effector is in close proximity above the butter, switch to VLA
+      - call exactly one short `execute_openpi_native_plan(prompt="Pick the butter and place it in the basket", replan_steps=3, execute_actions=3)`
+      - re-observe and localize butter again
+      - infer pickup conservatively:
+        - `picked = target_after is None`
+        - or `picked = gripper looks closed and target moved upward or is near the gripper`
+      - only if target is still visible and not picked, do one simple explicit top-down pickup and lift
+      - after explicit pickup, re-observe once more and only place if pickup is still plausible
+      - never mark pickup plausible just because you attempted a grasp
+
+      Important:
+      - VLA is useful only after you move the end effector above or very near the target object
+      - if OpenPI already failed once, stop repeating it
+      - keep the code compact, but one short helper is allowed
+      - do not build large libraries or long retry loops
+
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: Pick the butter and place it in the basket
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      If OpenPI already failed once, stop repeating it.
+      Use the stronger butter prompt ladder: `stick of butter`, `butter`, `butter package`, `yellow butter`, `Goal`.
+      If you call VLA again, use exactly:
+      `execute_openpi_native_plan(prompt="Pick the butter and place it in the basket", ...)`
+      Start using VLA only when the end effector is already in close proximity above the butter.
+      Re-localize butter and basket, then do only a short direct correction.
+      Only place into the basket if the object is plausibly grasped after re-observation.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_object_swap_6_vla_minimal_v4
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 10
+num_workers: 1

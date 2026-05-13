@@ -14,8 +14,8 @@ from typing import Any
 
 from capx.envs.configs.instantiate import instantiate
 from capx.llm.client import (
-    VLM_MODELS,
     ModelQueryArgs,
+    is_vlm_model,
     query_model as _query_model,
     query_model_streaming as _query_model_streaming,
 )
@@ -55,6 +55,13 @@ from capx.web.session_manager import Session, run_blocking_with_interrupt
 logger = logging.getLogger(__name__)
 
 MULTITURN_LIMIT = 30
+
+
+def _get_libero_goal(env) -> str:
+    """Return the current LIBERO task language when available."""
+    low_level_env = getattr(env, "low_level_env", None)
+    handle = getattr(low_level_env, "handle", None)
+    return str(getattr(handle, "task_language", ""))
 
 
 @dataclass
@@ -233,8 +240,8 @@ async def run_trial_async(
         # Build initial visual feedback from the frame captured in the reset thread
         initial_visual_feedback_base64 = None
         if (
-            (use_visual_feedback and args.model in VLM_MODELS)
-            or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
+            (use_visual_feedback and is_vlm_model(args.model))
+            or (use_img_differencing and is_vlm_model(visual_differencing_args.model))
         ) and initial_frame is not None:
             from PIL import Image
             initial_visual_feedback_img = Image.fromarray(initial_frame)
@@ -567,6 +574,11 @@ async def run_trial_async(
                     executed_code=executed_code,
                     console_stdout=info_step["stdout"],
                     console_stderr=info_step["stderr"],
+                    reward=reward,
+                    task_completed=info_step.get("task_completed", False),
+                    terminated=terminated,
+                    truncated=truncated,
+                    libero_environment_goal=_get_libero_goal(env),
                 )
 
                 if info_step["stderr"]:
@@ -575,8 +587,8 @@ async def run_trial_async(
                 # Build visual feedback from the frame captured in the step thread
                 visual_feedback_base64 = None
                 if (
-                    (use_visual_feedback and args.model in VLM_MODELS)
-                    or (use_img_differencing and visual_differencing_args.model in VLM_MODELS)
+                    (use_visual_feedback and is_vlm_model(args.model))
+                    or (use_img_differencing and is_vlm_model(visual_differencing_args.model))
                 ) and post_step_frame is not None:
                     from PIL import Image as _Image
                     import io as _io, base64 as _b64

@@ -1,0 +1,42 @@
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_spatial
+      task_id: 0
+      privileged: false
+      max_steps: 4000
+      control_freq: 20
+      seed: 7
+    privileged: false
+    apis:
+      - FrankaLiberoVLAApiReduced
+    prompt: |
+      Execute the provided oracle code.
+oracle_code: |
+  import numpy as np
+
+  REPLAN_STEPS = 5
+  MAX_REPLANS = 44
+
+  for _ in range(MAX_REPLANS):
+      action_chunk = get_openpi_native_action_chunk(
+          replan_steps=REPLAN_STEPS,
+          sync_from_primary=False,
+      )
+      for raw_action in np.asarray(action_chunk, dtype=np.float64):
+          step_result = execute_openpi_raw_action(raw_action, sync_from_primary=False)
+          if step_result["native_done"]:
+              break
+      if step_result["native_done"]:
+          break
+multi_turn_prompt: null
+
+record_video: true
+output_dir: ./outputs/franka_libero_spatial_0_openpi_oracle
+use_oracle_code: true
+
+trials: 10
+num_workers: 1

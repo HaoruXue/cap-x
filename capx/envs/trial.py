@@ -18,6 +18,7 @@ import gc
 import io
 import json
 import os
+import signal
 import time
 from typing import Any
 
@@ -28,8 +29,8 @@ from capx.envs.configs.instantiate import instantiate
 from capx.envs.tasks.base import CodeExecutionEnvBase
 
 from capx.llm.client import (
-    VLM_MODELS,
     ModelQueryArgs,
+    is_vlm_model,
     query_model as _query_model,
     query_model_ensemble as _query_model_ensemble,
     query_single_model_ensemble as _query_single_model_ensemble,
@@ -53,6 +54,7 @@ if TYPE_CHECKING:
 
 
 MULTITURN_LIMIT = 10
+CODE_BLOCK_TIMEOUT_SECONDS = 180
 
 # ---------------------------------------------------------------------------
 # Shared formatting helpers
@@ -230,8 +232,8 @@ def _capture_initial_visual_feedback(
     use_wrist = config.get("use_wrist_camera", False)
 
     needs_visual = (
-        (config["use_visual_feedback"] and args.model in VLM_MODELS)
-        or (config["use_img_differencing"] and visual_differencing_args.model in VLM_MODELS)
+        (config["use_visual_feedback"] and is_vlm_model(args.model))
+        or (config["use_img_differencing"] and is_vlm_model(visual_differencing_args.model))
         or config.get("use_video_differencing", False)
     )
     if not (needs_visual and hasattr(env, "render")):
@@ -512,6 +514,9 @@ def _handle_multi_turn_step(
     code_blocks: list[str],
     code_block_idx: int,
     info_step: dict[str, Any],
+    reward: float,
+    terminated: bool,
+    truncated: bool,
     task_description: str,
     visual_feedback_imgs: list,
     visual_feedback_base64_history: list[str],
@@ -542,6 +547,11 @@ def _handle_multi_turn_step(
         executed_code=executed_code,
         console_stdout=info_step["stdout"],
         console_stderr=info_step["stderr"],
+        reward=reward,
+        task_completed=info_step.get("task_completed", False),
+        terminated=terminated,
+        truncated=truncated,
+        libero_environment_goal=_get_libero_goal(env),
     )
 
     if info_step["stderr"] != "":
@@ -550,8 +560,8 @@ def _handle_multi_turn_step(
     # Capture visual feedback if applicable
     visual_feedback_base64 = None
     needs_visual = (
-        (config["use_visual_feedback"] and args.model in VLM_MODELS)
-        or (config["use_img_differencing"] and visual_differencing_args.model in VLM_MODELS)
+        (config["use_visual_feedback"] and is_vlm_model(args.model))
+        or (config["use_img_differencing"] and is_vlm_model(visual_differencing_args.model))
     )
     if needs_visual and hasattr(env, "render"):
         vf_base64, vf_img = _get_visual_feedback(env)
@@ -696,7 +706,7 @@ def _run_single_trial(
     )
 
     if config["use_img_differencing"] or use_video_diff:
-        assert visual_differencing_args.model in VLM_MODELS, (
+        assert is_vlm_model(visual_differencing_args.model), (
             "Image/video differencing model must be in the list of VLM models"
         )
 
@@ -719,7 +729,9 @@ def _run_single_trial(
 
     # --- 3. Initial code generation ---
     if config["use_oracle_code"]:
-        raw_code = env.oracle_code
+        raw_code = config.get("oracle_code") or getattr(env, "oracle_code", None)
+        if raw_code is None:
+            raise AttributeError("Oracle execution requested, but no oracle_code was provided.")
         with open(os.path.join(config["output_dir"], "oracle_code.py"), "w") as f:
             f.write(raw_code)
         reasoning = None
@@ -784,7 +796,29 @@ def _run_single_trial(
         # Record frame index before step
         frame_start = env.get_video_frame_count() if recording_frames else 0
 
-        obs_next, reward, terminated, truncated, info_step = env.step(code)
+        def _code_block_timeout_handler(signum: int, frame) -> None:  # type: ignore[override]
+            raise TimeoutError(
+                f"Execution timed out after {CODE_BLOCK_TIMEOUT_SECONDS} seconds. "
+                "The code may be stuck in a loop or waiting for an unreachable target."
+            )
+
+        previous_handler = signal.signal(signal.SIGALRM, _code_block_timeout_handler)
+        signal.alarm(CODE_BLOCK_TIMEOUT_SECONDS)
+        try:
+            obs_next, reward, terminated, truncated, info_step = env.step(code)
+        except TimeoutError as exc:
+            obs_next = obs
+            terminated = False
+            truncated = False
+            info_step = {
+                "sandbox_rc": 1,
+                "stdout": "",
+                "stderr": str(exc),
+                "task_completed": False,
+            }
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
 
         # Record frame index after step
         frame_end = env.get_video_frame_count() if recording_frames else 0
@@ -799,6 +833,16 @@ def _run_single_trial(
             })
 
         obs = obs_next
+
+        # Some environments expose success through the execution metadata but leave the
+        # aggregate step reward at 0.0. Reconcile that here so saved artifacts and
+        # summary metrics reflect the actual task outcome.
+        if info_step.get("task_completed", False) and reward < 1.0:
+            reward = 1.0
+        if reward >= 1.0 and not info_step.get("task_completed", False):
+            info_step["task_completed"] = True
+        if info_step.get("task_completed", False) and not terminated:
+            terminated = True
 
         # Multi-turn decision
         if multi_turn_prompt:
@@ -818,7 +862,7 @@ def _run_single_trial(
 
             decision, new_code, mt_reasoning, mt_ensemble, decision_prompt = _handle_multi_turn_step(
                 env, obs, args, config, visual_differencing_args,
-                multi_turn_prompt, code_blocks, code_block_idx, info_step,
+                multi_turn_prompt, code_blocks, code_block_idx, info_step, reward, terminated, truncated,
                 task_description, visual_feedback_imgs, visual_feedback_base64_history,
                 stderr_history,
                 turn_frames=turn_frames,
@@ -893,9 +937,13 @@ def _run_single_trial(
         partial_artifacts["final_code"] = final_code
         partial_artifacts["num_code_blocks"] = num_code_blocks
 
-    # Override sandbox_rc for terminated-episode stderr
+    # Normalize the common LIBERO success case where extra cleanup motions are attempted
+    # after the environment has already terminated.
     if "executing action in terminated episode" in info_step["stderr"]:
         sandbox_rc_override = 0
+        reward = max(reward, 1.0)
+        terminated = True
+        info_step["task_completed"] = True
     if sandbox_rc_override is not None:
         info_step["sandbox_rc"] = sandbox_rc_override
 
@@ -974,3 +1022,11 @@ def _patch_libero_goal(env: CodeExecutionEnvBase, obs: dict[str, Any]) -> None:
                 libero_environment_goal=goal
             )
         )
+
+
+def _get_libero_goal(env: CodeExecutionEnvBase) -> str:
+    """Return the current LIBERO task language when available."""
+    if not hasattr(env.low_level_env, "handle"):
+        return ""
+    handle = env.low_level_env.handle
+    return str(getattr(handle, "task_language", ""))

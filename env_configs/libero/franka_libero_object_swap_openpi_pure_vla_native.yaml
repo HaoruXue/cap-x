@@ -1,0 +1,98 @@
+# LIBERO-PRO object_swap — pure VLA via OpenPI, NATIVE env.step path.
+#
+# This is the apples-to-apples counterpart to
+# franka_libero_object_swap_openpi_pure_vla.yaml. The difference is
+# ONLY which execution tool the prompt steers toward:
+#
+#   execute_openpi_plan        (IK-waypoint path — absolute Cartesian waypoints via IK + move_to_joints_blocking)
+#   execute_openpi_native_plan (raw env.step(delta_action) — matches OpenPI's eval_libero_direct.py)
+#
+# The IK-waypoint path tends to produce higher numbers because IK
+# smooths VLA jitter. The native path matches the numbers you get from
+# running OpenPI's own eval script end-to-end.
+#
+# Prerequisites identical to the IK-path config.
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 6
+    privileged: false
+    apis:
+      - FrankaLiberoVLANoSam3Api
+    prompt: |
+      You are controlling a Franka Emika robot with the API described below.
+      Goal: {libero_environment_goal}
+
+      You have a dedicated VLA policy exposed through the OpenPI-named tools.
+      The backend is OpenPI; the wire contract is identical.
+
+      PREFERRED STRATEGY: burst 20-50 VLA rollout steps per code block.
+      The cap-x multi-turn cap is 10 code blocks; each block should run
+      MANY native actions to give the VLA enough horizon to complete the
+      pick + place. Example code block:
+
+          for _ in range(10):
+              execute_openpi_native_plan(replan_steps=5, execute_actions=5)
+          # 50 env steps = ~2.5s of sim, enough for an approach or a grasp
+
+      This path feeds the VLA's delta actions directly into env.step,
+      which is what the VLA was trained to drive. Do NOT use
+      execute_openpi_plan (that path converts VLA outputs to cartesian
+      waypoints and executes them via IK — different execution
+      semantics).
+
+      Do not hand-craft motion plans. Do not call `goto_pose`. Only
+      `FINISH` once the observation visually confirms the object is placed
+      in the basket.
+
+      You may write python code comments for reasoning but ONLY write the
+      executable Python code and do not write it in code fences. After this
+      code executes, you will be able to get a new observation and write new
+      code to continue the task. The functions (APIs) below are already
+      imported; to use numpy, import it explicitly.
+
+    multi_turn_prompt: |
+      The following code blocks were just executed:
+      ```python
+      {executed_code}
+      ```
+      The current console stdout is:
+      ```
+      {console_stdout}
+      ```
+      The current console stderr is:
+      ```
+      {console_stderr}
+      ```
+      If there were no errors during compilation or execution, the console
+      stderr will be empty. If there were errors, consider regenerating the
+      code.
+
+      Do not respond with `FINISH` unless the task is clearly complete. If
+      the robot has only made partial progress, or you have not explicitly
+      verified placement, continue with another `execute_openpi_native_plan`
+      call.
+
+      Please respond with EXACTLY ONE of the following:
+      - The word 'REGENERATE' followed immediately by new Python code in a
+        fenced code block (```python...```) if you want to modify the code.
+      - The word 'FINISH' if the task appears to be complete.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+record_video: true
+output_dir: ./outputs/franka_libero_object_swap_openpi_pure_vla_native
+save_multiturn_prompts: true
+
+trials: 20
+num_workers: 4

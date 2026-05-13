@@ -12,6 +12,7 @@ from capx.envs.base import (
     BaseEnv,
 )
 from capx.integrations.base_api import ApiBase
+from capx.integrations.franka.openpi_tooling import FrankaLiberoOpenPIToolMixin
 from capx.integrations.vision.graspnet import init_contact_graspnet, init_contact_graspnet_point_clouds
 from capx.integrations.vision.molmo import init_molmo
 from capx.integrations.vision.sam2 import init_sam2_point_prompt
@@ -24,6 +25,7 @@ from capx.utils.depth_utils import (
     depth_to_rgb,
 )
 from capx.integrations.motion.pyroki import init_pyroki
+from capx.utils.openpi import OpenPIWebsocketClient
 
 _curobo_api = None
 
@@ -37,7 +39,7 @@ def _get_curobo_api():
 from sklearn.cluster import DBSCAN
 
 # ------------------------------- Control API ------------------------------
-class FrankaLiberoApi(ApiBase):
+class FrankaLiberoApi(FrankaLiberoOpenPIToolMixin, ApiBase):
     """Robot control helpers for Franka.
     """
 
@@ -70,10 +72,16 @@ class FrankaLiberoApi(ApiBase):
         self.wrist_camera_name = "robot0_eye_in_hand"
         self.cfg = None
         self._curobo_world_config = None
+        self._openpi_client: OpenPIWebsocketClient | None = None
+        self._openpi_client_endpoint: tuple[str, int] | None = None
 
     def functions(self) -> dict[str, Any]:
         fns =  {
             "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
             "get_object_pose": self.get_object_pose,
             "sample_grasp_pose": self.sample_grasp_pose,
             "goto_pose": self.goto_pose,
@@ -82,6 +90,8 @@ class FrankaLiberoApi(ApiBase):
             "get_oriented_bounding_box_from_3d_points": self.get_oriented_bounding_box_from_3d_points,
             "get_object_3d_points_and_masks_from_language": self.get_object_3d_points_and_masks_from_language,
             "goto_home_joint_position": self.goto_home_joint_position,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
             # # CuRobo, uncomment these for the coding agent to use them!
             # "plan_grasp_trajectory": self.plan_grasp_trajectory,
             # "plan_with_grasped_object": self.plan_with_grasped_object,
@@ -1067,3 +1077,103 @@ class FrankaLiberoApi(ApiBase):
             **kwargs,
         )
         return success, joint_traj
+
+
+class FrankaLiberoVLAApi(FrankaLiberoApi):
+    """VLA-forward LIBERO API that prioritizes the OpenPI tool surface in prompts."""
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
+            "execute_openpi_native_step": self.execute_openpi_native_step,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "plan_with_openpi_native": self.plan_with_openpi_native,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
+            "goto_pose": self.goto_pose,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+            "goto_home_joint_position": self.goto_home_joint_position,
+            "get_object_pose": self.get_object_pose,
+            "sample_grasp_pose": self.sample_grasp_pose,
+            "get_oriented_bounding_box_from_3d_points": self.get_oriented_bounding_box_from_3d_points,
+            "get_object_3d_points_and_masks_from_language": self.get_object_3d_points_and_masks_from_language,
+        }
+
+
+class FrankaLiberoVLANoSam3Api(FrankaLiberoApi):
+    """No-SAM3 LIBERO VLA API that exposes only OpenPI and motion primitives."""
+
+    def functions(self) -> dict[str, Any]:
+        return {
+            "get_observation": self.get_observation,
+            "get_openpi_server_info": self.get_openpi_server_info,
+            "plan_with_openpi": self.plan_with_openpi,
+            "execute_openpi_step": self.execute_openpi_step,
+            "execute_openpi_plan": self.execute_openpi_plan,
+            "execute_openpi_native_step": self.execute_openpi_native_step,
+            "execute_openpi_native_plan": self.execute_openpi_native_plan,
+            "plan_with_openpi_native": self.plan_with_openpi_native,
+            "get_openpi_action_chunk": self.get_openpi_action_chunk,
+            "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            "get_openpi_subgoal": self.get_openpi_subgoal,
+            "goto_pose": self.goto_pose,
+            "open_gripper": self.open_gripper,
+            "close_gripper": self.close_gripper,
+            "goto_home_joint_position": self.goto_home_joint_position,
+        }
+
+
+class FrankaLiberoOneModelVLAApi(FrankaLiberoVLAApi):
+    """VLA-forward LIBERO API backed by one-model's PolicyServer.
+
+    Wire-contract is identical to OpenPI's LIBERO head (the one-model server
+    runs the ``libero_robosuite`` I/O adapter), so every tool inherited from
+    ``FrankaLiberoVLAApi`` works unchanged. The only difference is the
+    backend dispatch in ``_get_openpi_client`` / ``_build_vla_payload``.
+
+    Exposes both ``execute_openpi_plan`` (IK-waypoint rollout) and
+    ``execute_openpi_native_plan`` (raw ``env.step(delta_action)`` rollout,
+    matches one-model's ``eval_libero_direct.py``) so prompts can choose.
+    """
+
+    _vla_backend: str = "one_model"
+
+    def functions(self) -> dict[str, Any]:
+        fns = super().functions()
+        fns.update(
+            {
+                "execute_openpi_native_plan": self.execute_openpi_native_plan,
+                "execute_openpi_native_step": self.execute_openpi_native_step,
+                "plan_with_openpi_native": self.plan_with_openpi_native,
+                "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            }
+        )
+        return fns
+
+
+class FrankaLiberoOneModelVLANoSam3Api(FrankaLiberoVLANoSam3Api):
+    """No-SAM3 one-model VLA API — VLA + motion primitives only.
+
+    Same backend swap as ``FrankaLiberoOneModelVLAApi`` and also exposes
+    the native env-step rollout family.
+    """
+
+    _vla_backend: str = "one_model"
+
+    def functions(self) -> dict[str, Any]:
+        fns = super().functions()
+        fns.update(
+            {
+                "execute_openpi_native_plan": self.execute_openpi_native_plan,
+                "execute_openpi_native_step": self.execute_openpi_native_step,
+                "plan_with_openpi_native": self.plan_with_openpi_native,
+                "get_openpi_native_action_chunk": self.get_openpi_native_action_chunk,
+            }
+        )
+        return fns

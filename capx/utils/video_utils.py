@@ -46,7 +46,10 @@ def _write_video(frames: list[np.ndarray], output_dir: str | None, *, suffix: st
     parent = Path(output_dir)
     out_path = parent / f"video_{suffix}.mp4"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with imageio.get_writer(out_path, fps=30, format="FFMPEG", codec="libx264") as writer:
+    # Real-time playback: libero sim at control_freq=20 Hz with
+    # _video_subsample_rate=1 → 1 recorded frame per 50 ms of sim time →
+    # fps=20 is real time.
+    with imageio.get_writer(out_path, fps=20, format="FFMPEG", codec="libx264") as writer:
         for frame in frames:
             writer.append_data(np.ascontiguousarray(frame))
     print(f"Saved interaction video to {out_path} ({len(frames)} frames)")

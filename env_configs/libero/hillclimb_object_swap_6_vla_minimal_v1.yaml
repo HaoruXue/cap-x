@@ -1,0 +1,82 @@
+# Targeted minimal hybrid for LIBERO-PRO object-swap task 6 (milk).
+
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_object_swap
+      task_id: 6
+      privileged: false
+      max_steps: 8000
+      control_freq: 20
+    privileged: false
+    apis:
+      - FrankaLiberoVLAMinimalApiReduced
+    prompt: |
+      Goal: {libero_environment_goal}
+
+      Use the exact full Goal if you call OpenPI.
+
+      This is a hybrid local-prior policy:
+      - localize the basket first
+      - localize the milk carton described by Goal
+      - use `point_prompt_molmo` with "milk" or the full Goal, then refine with `segment_sam3_point_prompt`
+      - move to a top-down hover directly above the milk carton
+      - call exactly one `execute_openpi_native_plan(prompt=Goal, replan_steps=3, execute_actions=3)`
+      - re-observe
+      - if the milk is grasped, explicitly place it into the basket
+      - if OpenPI failed, do one short explicit top-down pickup, then explicit basket placement
+
+      Important:
+      - VLA is better once the gripper is already above the object
+      - do not use task-0 object names
+      - keep the code short
+      - do not build large retry frameworks
+
+      Example:
+      - For "Pick the milk and place it in the basket": locate basket, locate milk, hover above milk, one short OpenPI burst with the full Goal, then explicit basket placement if grasped.
+
+      Only write executable Python code.
+
+    multi_turn_prompt: |
+      Goal: {libero_environment_goal}
+      stdout:
+      ```
+      {console_stdout}
+      ```
+      stderr:
+      ```
+      {console_stderr}
+      ```
+      status: reward={reward}, task_completed={task_completed}, terminated={terminated}, truncated={truncated}
+
+      If OpenPI already failed once, stop repeating it.
+      Keep the next code block short and direct.
+      Only respond with `FINISH` if task_completed is true or the object is clearly placed correctly.
+      Otherwise respond with `REGENERATE` and new Python code.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+  - _target_: capx.serving.launch_contact_graspnet_server.main
+    port: 8115
+    host: 127.0.0.1
+  - _target_: capx.serving.launch_sam3_server.main
+    device: cuda
+    port: 8114
+    host: 127.0.0.1
+
+record_video: true
+save_multiturn_prompts: true
+output_dir: ./outputs/hillclimb_object_swap_6_vla_minimal_v1
+use_img_differencing: false
+use_parallel_ensemble: false
+use_multimodel: false
+
+trials: 3
+num_workers: 1
