@@ -104,6 +104,10 @@ ovdet = [
   "pillow>=10",
   "requests>=2.32",
 ]
+bedrock = [
+  "litellm>=1.74",
+  "boto3>=1.34",
+]
 verl = [
   "torch==2.8.0",
   "vllm==0.11.0 ; extra == 'verl'",

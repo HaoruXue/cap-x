@@ -119,6 +119,10 @@ def create_app(region: str) -> FastAPI:
         kw["aws_region_name"] = region
         # Bedrock has no notion of reasoning_effort; drop it.
         kw.pop("reasoning_effort", None)
+        # Claude Opus 4.x on Bedrock rejects `temperature` and `top_p`.
+        if "claude-opus-4" in kw["model"]:
+            kw.pop("temperature", None)
+            kw.pop("top_p", None)
         return kw
 
     @app.post("/chat/completions")
