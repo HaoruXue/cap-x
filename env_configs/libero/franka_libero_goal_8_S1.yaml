@@ -1,0 +1,32 @@
+# LIBERO libero_goal task 8, S1 tier (privileged + high-level API).
+# Task: "put the bowl on the plate"
+# Paper rate (CaP-Agent0 Pos, multi-turn+VDM): 0.36
+env:
+  _target_: capx.envs.tasks.franka.franka_libero_env.FrankaLiberoCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.libero.FrankaLiberoEnv
+      suite_name: libero_goal
+      task_id: 8
+    privileged: true
+    apis:
+      - FrankaLiberoPrivilegedApi
+    prompt: |
+      You are controlling a Franka Emika robot with API described below.
+      Goal: {libero_environment_goal}
+      You may write python code comments for reasoning but ONLY write the executable Python code and do not write it in code fences.
+      Write a single program that drives the robot all the way to task completion. Your program will be executed once; there is no follow-up turn.
+      The functions (APIs) below are already imported to the environment. If you want to use numpy, you need to import it explicitly.
+
+api_servers:
+  - _target_: capx.serving.launch_pyroki_server.main
+    port: 8116
+    host: 127.0.0.1
+    robot: panda_description
+    target_link: panda_hand
+
+record_video: true
+output_dir: ./outputs/libero_goal__8__S1
+trials: 10
+num_workers: 10

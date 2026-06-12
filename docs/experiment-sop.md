@@ -205,19 +205,19 @@ Top-level files: `initial_prompt.txt` (the formatted system + user
 prompt), `summaries.txt` (per-trial result lines), `aaa_done_flag` (touch
 file written when the run finishes cleanly).
 
-## 7. Driver script (sketch — not yet written)
+## 7. Manual orchestration
 
-A future `scripts/run_libero_grid.py` would:
+This campaign is run by hand, not by a driver script. Claude orchestrates
+one task at a time: launch the batch, watch it finish, write the manifest
+line, decide whether to resume or move on. The reason is that the
+bookkeeping is judgment-heavy — interpreting failure modes, deciding
+whether a near-miss counts as "unsolvable", noting deviations — and
+folding that into a script would either lose the judgment or make the
+script as complex as just doing the work.
 
-1. Read a TOML/YAML worklist of `(suite, task_id, tier)` triples.
-2. For each, ensure a YAML config exists (auto-generate if missing).
-3. Loop the §4 logic, appending to `manifest.jsonl` and aborting cleanly
-   on Ctrl-C with the manifest still consistent.
-4. Resume on restart by reading `manifest.jsonl` and skipping any
-   (suite, task, tier) that already has a `task_summary` line.
-
-Hold off on writing this until we run the first 3-5 tasks by hand and
-confirm the manifest schema covers everything we end up wanting to query.
+Concretely each task is one or more `launch.py` invocations followed by
+appending one `run` line per invocation and one `task_summary` line when
+the task hits its stop condition. Append-only — never edit prior lines.
 
 ## 8. Known gotchas
 

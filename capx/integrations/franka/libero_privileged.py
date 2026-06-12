@@ -66,7 +66,7 @@ class FrankaLiberoPrivilegedApi(ApiBase):
 
     def get_object_pose(self, object_name: str) -> tuple[np.ndarray, np.ndarray]:
         """Get the pose of an object in the environment from a natural language description.
-        The quaternion from get_object_pose may be unreliable, so disregard it and use the grasp pose quaternion OR (0, 0, 1, 0) wxyz as the gripper down orientation if using this for placement position.
+        The quaternion from get_object_pose may be unreliable, so disregard it. For placement, keep the same quaternion you grasped the held object with (i.e. the one returned by sample_grasp_pose); changing orientation while holding an object can tilt it and cause a drop. Only use (0, 0, 1, 0) wxyz (gripper-down) when not currently holding anything.
 
         Args:
             object_name: The name of the object to get the pose of, in underscore separated lowercase words.
