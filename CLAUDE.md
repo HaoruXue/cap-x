@@ -128,6 +128,15 @@ Tier → required servers (LIBERO):
 - **S2** (`FrankaLiberoApi`): SAM3 + GraspNet + PyRoKi (+ Molmo if you
   want the get_object_pose / point_prompt_molmo path)
 
+## LIBERO rollout campaigns
+
+The standing experiment plan (Opus 4.8 via Bedrock, S1 then S2, ≥10
+successes per task or unsolvable verdict) lives in
+[`docs/experiment-sop.md`](docs/experiment-sop.md). Read that before
+starting a campaign — it covers preflight, the manifest schema, and
+known gotchas (notably `OPENROUTER_SERVER_URL` and the
+reasoning-is-summarized-not-verbatim caveat).
+
 ## Smoke test
 
 After install + proxy is up, the cheapest end-to-end check is the quick
