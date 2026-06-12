@@ -61,6 +61,33 @@ If port 8110 is already taken (e.g. by another long-running OpenRouter
 proxy), run the Bedrock proxy on a different port and pass it via
 `--server-url http://127.0.0.1:<port>/chat/completions` to `launch.py`.
 
+### Adaptive thinking on Opus 4.7/4.8
+
+Opus 4.7/4.8 on Bedrock require **adaptive thinking** — the legacy
+`thinking={"type":"enabled","budget_tokens":N}` form (which
+`capx/llm/client.py:217` still builds for `CLAUDE_MODELS`) is rejected
+with a 400. The proxy translates `reasoning_effort` (low/medium/high/
+xhigh/max) into:
+
+```python
+thinking = {"type": "adaptive", "display": "summarized"}
+output_config = {"effort": <effort>}   # default "high"
+```
+
+`display: "summarized"` matters: the Bedrock default is `"omitted"`,
+which returns a thinking block with empty `text` and only an encrypted
+`signature` — no plaintext reasoning. With `summarized`, you get a
+short paraphrased chain-of-thought (~100–800 chars). The proxy then
+surfaces it on the OpenAI-style response as
+`choices[0].message.reasoning`, which `query_model` already reads and
+trial.py persists into `all_responses.json` per turn.
+
+**`temperature` / `top_p` / `top_k`** are deprecated on Opus 4.7+ and
+return 400 if non-default. The proxy strips them.
+
+Reference: [AWS Builder, "Claude Opus 4.7 on Amazon Bedrock — APIs,
+Features, and Migration Guide"](https://builder.aws.com/content/3Cl90CMMnqzCrkk6mXcmnGo1WTG/claude-opus-47-on-amazon-bedrock-apis-features-and-migration-guide).
+
 ## Perception servers for LIBERO tiers
 
 `FrankaLiberoApi` (S2/M*) eagerly initializes clients for SAM3, GraspNet,

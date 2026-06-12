@@ -47,6 +47,11 @@ class ContentItem(BaseModel):
 class Message(BaseModel):
     role: str
     content: str | list[ContentItem] | None = None
+    # Surfaced for Anthropic-on-Bedrock adaptive thinking — summary of the
+    # model's chain-of-thought when display="summarized" is requested.
+    # Field name matches the OpenRouter / DeepSeek convention so existing
+    # callers (e.g. capx.llm.client.query_model) read it without changes.
+    reasoning: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -117,12 +122,20 @@ def create_app(region: str) -> FastAPI:
         kw = request.model_dump(exclude_none=True)
         kw["model"] = _resolve_model(kw.get("model", ""))
         kw["aws_region_name"] = region
-        # Bedrock has no notion of reasoning_effort; drop it.
-        kw.pop("reasoning_effort", None)
         # Claude Opus 4.x on Bedrock rejects `temperature` and `top_p`.
         if "claude-opus-4" in kw["model"]:
             kw.pop("temperature", None)
             kw.pop("top_p", None)
+        # Translate OpenAI-style `reasoning_effort` to Bedrock's adaptive
+        # thinking + output_config.effort. Default effort=high; request
+        # summarized display so we capture plaintext reasoning instead of
+        # only an opaque signature.
+        effort = kw.pop("reasoning_effort", None)
+        if "claude-opus-4" in kw["model"] or "claude-sonnet-4" in kw["model"]:
+            valid = {"low", "medium", "high", "xhigh", "max"}
+            effort = effort if effort in valid else "high"
+            kw["thinking"] = {"type": "adaptive", "display": "summarized"}
+            kw["output_config"] = {"effort": effort}
         return kw
 
     @app.post("/chat/completions")
@@ -144,14 +157,31 @@ def create_app(region: str) -> FastAPI:
             kw["stream"] = False
             response = await litellm.acompletion(**kw)
 
-            choices = [
-                ChatCompletionResponseChoice(
-                    index=c.index,
-                    message=Message(role=c.message.role, content=c.message.content),
-                    finish_reason=c.finish_reason,
+            choices = []
+            for c in response.choices:
+                # litellm exposes Anthropic adaptive-thinking summaries on
+                # the message as `reasoning_content` and/or in
+                # `thinking_blocks[*].thinking`. Fall back through both.
+                reasoning = getattr(c.message, "reasoning_content", None) or None
+                if not reasoning:
+                    blocks = getattr(c.message, "thinking_blocks", None) or []
+                    chunks = [
+                        b.get("thinking") if isinstance(b, dict) else getattr(b, "thinking", None)
+                        for b in blocks
+                    ]
+                    chunks = [s for s in chunks if s]
+                    reasoning = "\n".join(chunks) if chunks else None
+                choices.append(
+                    ChatCompletionResponseChoice(
+                        index=c.index,
+                        message=Message(
+                            role=c.message.role,
+                            content=c.message.content,
+                            reasoning=reasoning,
+                        ),
+                        finish_reason=c.finish_reason,
+                    )
                 )
-                for c in response.choices
-            ]
             return ChatCompletionResponse(
                 id=response.id,
                 created=response.created,
