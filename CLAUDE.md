@@ -58,8 +58,15 @@ The default model in `LaunchArgs` (`capx/envs/launch.py:52`) is
 resolved model containing `claude-opus-4`.
 
 If port 8110 is already taken (e.g. by another long-running OpenRouter
-proxy), run the Bedrock proxy on a different port and pass it via
-`--server-url http://127.0.0.1:<port>/chat/completions` to `launch.py`.
+proxy), run the Bedrock proxy on a different port and **export
+`OPENROUTER_SERVER_URL`** so the client routes there. `--server-url` on
+`launch.py` is *not* honored when the model name starts with
+`openrouter/` — the client (`capx/llm/client.py:191`) hardcodes the
+OpenRouter path. The env var is the override:
+
+```bash
+export OPENROUTER_SERVER_URL=http://127.0.0.1:8112/chat/completions
+```
 
 ### Adaptive thinking on Opus 4.7/4.8
 

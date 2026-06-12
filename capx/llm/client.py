@@ -63,7 +63,9 @@ OPENROUTER_MODELS = [
     "openrouter/meta-llama/llama-4-maverick",
     "openrouter/qwen/qwen3-235b-a22b",
 ]
-OPENROUTER_SERVER_URL = "http://localhost:8110/chat/completions"
+OPENROUTER_SERVER_URL = os.environ.get(
+    "OPENROUTER_SERVER_URL", "http://localhost:8110/chat/completions"
+)
 
 # ---------------------------------------------------------------------------
 # Ensemble configuration
