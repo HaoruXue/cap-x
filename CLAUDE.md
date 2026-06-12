@@ -61,6 +61,39 @@ If port 8110 is already taken (e.g. by another long-running OpenRouter
 proxy), run the Bedrock proxy on a different port and pass it via
 `--server-url http://127.0.0.1:<port>/chat/completions` to `launch.py`.
 
+## Perception servers for LIBERO tiers
+
+`FrankaLiberoApi` (S2/M*) eagerly initializes clients for SAM3, GraspNet,
+PyRoKi, **and Molmo**. The first three are declared as `api_servers:` in
+the LIBERO YAMLs and auto-launch via `_start_api_servers`. Molmo is the
+odd one out:
+
+- **Not required** for the published LIBERO / CaP-Agent0 results — per
+  maintainer in [issue #17](https://github.com/capgym/cap-x/issues/17).
+  But it is recommended and used by the LIBERO `get_object_pose` fallback
+  when SAM3 text-prompt finds nothing (`capx/integrations/franka/libero.py:410`).
+- **No launcher in `capx/serving/`** and not listed in
+  `SERVER_REGISTRY`. `init_molmo()` does not probe at startup; failures
+  surface only on the first call to `point_prompt_molmo` (or the SAM3
+  fallback path).
+- **Recommended bringup** (vLLM, port 8122, separate venv because the
+  `molmo` extra conflicts with `robosuite`/`verl`):
+
+  ```bash
+  uv venv .venv-molmo --python 3.10
+  source .venv-molmo/bin/activate
+  uv sync --active --extra molmo
+  vllm serve allenai/Molmo2-8B \
+      --trust-remote-code --port 8122 \
+      --max-num-batched-tokens 36864 --dtype bfloat16 \
+      --limit-mm-per-prompt.image 2
+  ```
+
+Tier → required servers (LIBERO):
+- **S1** (`FrankaLiberoPrivilegedApi`): PyRoKi only
+- **S2** (`FrankaLiberoApi`): SAM3 + GraspNet + PyRoKi (+ Molmo if you
+  want the get_object_pose / point_prompt_molmo path)
+
 ## Smoke test
 
 After install + proxy is up, the cheapest end-to-end check is the quick
