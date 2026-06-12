@@ -49,7 +49,7 @@ class LaunchArgs:
     server_url: str = "http://127.0.0.1:8110/chat/completions"
     """URL of the vLLM server's chat completions endpoint."""
 
-    model: str = "google/gemini-3.1-pro-preview"
+    model: str = "openrouter/anthropic/claude-opus-4"
     """Name of the model to query on from the server_url."""
 
     temperature: float = 1.0
