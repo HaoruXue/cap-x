@@ -19,11 +19,18 @@ Credentials come from the machine's default AWS config (AWS_PROFILE / ~/.aws),
 the same setup used elsewhere on this box.
 """
 
+import json as _json
 import logging
+import time as _time
+import uuid as _uuid
 
+import boto3
+import httpx
 import litellm
 import tyro
 import uvicorn
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -90,8 +97,15 @@ MODEL_MAP = {
     "deepseek/deepseek-chat-v3-0324": "bedrock/deepseek.v3-v1:0",
     "qwen/qwen3-235b-a22b": "bedrock/qwen.qwen3-235b-a22b-2507-v1:0",
     "meta-llama/llama-4-maverick": "bedrock/us.meta.llama3-3-70b-instruct-v1:0",
-    # google/gemini and openai/* have no Bedrock equivalent — route them to a
-    # sensible default so trials don't crash; adjust to taste.
+    # OpenAI GPT-5.x — served via Bedrock Mantle endpoint, NOT bedrock-runtime.
+    # The string-prefixed `mantle/` form tells the proxy to take the
+    # bedrock-mantle code path (SigV4 → /openai/v1/responses) instead of
+    # litellm's Converse-API path. Region-pinned to us-east-2 since
+    # bedrock-mantle for GPT-5.x is only in us-east-1/us-east-2.
+    "openai/gpt-5.5": "mantle/openai.gpt-5.5",
+    "openai/gpt-5.4": "mantle/openai.gpt-5.4",
+    # google/gemini have no Bedrock equivalent — route them to a sensible
+    # default so trials don't crash; adjust to taste.
     "google/gemini-2.5-pro-preview": "bedrock/us.amazon.nova-pro-v1:0",
     "google/gemini-3.1-pro-preview": "bedrock/us.amazon.nova-pro-v1:0",
 }
@@ -102,10 +116,123 @@ def _resolve_model(model: str) -> str:
         model = model[len("openrouter/"):]
     if model in MODEL_MAP:
         return MODEL_MAP[model]
-    if model.startswith("bedrock/"):
+    if model.startswith("bedrock/") or model.startswith("mantle/"):
         return model
     # Bare Bedrock id (e.g. "us.anthropic.claude-sonnet-4-6") -> add prefix.
     return f"bedrock/{model}"
+
+
+# --- Bedrock Mantle (GPT-5.x via Responses API) helpers ---------------------
+
+# Bedrock Mantle for GPT-5.x is currently only available in us-east-1 and
+# us-east-2. Pinned to us-east-2 by default; override with $BEDROCK_MANTLE_REGION.
+_MANTLE_REGION = "us-east-2"
+
+
+def _messages_to_responses_input(messages: list) -> list:
+    """Convert OpenAI Chat Completions messages to Responses-API ``input``.
+
+    The Responses API on Bedrock Mantle accepts a list of {role, content}
+    dicts directly (verified empirically). Multimodal content_items map
+    1:1 except that image_url with data: URLs become {type:"input_image",
+    image_url:"..."}.
+    """
+    out: list = []
+    for m in messages:
+        role = m.get("role", "user") if isinstance(m, dict) else m.role
+        content = m.get("content") if isinstance(m, dict) else m.content
+        if isinstance(content, str):
+            out.append({"role": role, "content": content})
+            continue
+        # Content is a list of items
+        items_in: list = []
+        for item in content or []:
+            if isinstance(item, dict):
+                t = item.get("type")
+                if t == "text":
+                    items_in.append({"type": "input_text", "text": item.get("text", "")})
+                elif t == "image_url":
+                    url = item.get("image_url", {}).get("url") if isinstance(item.get("image_url"), dict) else item.get("image_url")
+                    items_in.append({"type": "input_image", "image_url": url})
+                else:
+                    items_in.append(item)
+            else:
+                # Pydantic ContentItem
+                t = getattr(item, "type", None)
+                if t == "text":
+                    items_in.append({"type": "input_text", "text": getattr(item, "text", "")})
+                elif t == "image_url":
+                    iu = getattr(item, "image_url", None)
+                    url = iu.url if iu is not None else None
+                    items_in.append({"type": "input_image", "image_url": url})
+        out.append({"role": role, "content": items_in})
+    return out
+
+
+def _mantle_request(model_id: str, request: "ChatCompletionRequest", region: str) -> dict:
+    """Call Bedrock Mantle /openai/v1/responses via SigV4 and return the JSON."""
+    body = {
+        "model": model_id,
+        "input": _messages_to_responses_input([m.model_dump() for m in request.messages]),
+    }
+    if request.max_tokens is not None:
+        body["max_output_tokens"] = request.max_tokens
+    if request.max_completion_tokens is not None:
+        body["max_output_tokens"] = request.max_completion_tokens
+    if request.reasoning_effort:
+        body["reasoning"] = {"effort": request.reasoning_effort}
+
+    session = boto3.Session(region_name=region)
+    creds = session.get_credentials()
+    if creds is None:
+        raise RuntimeError("No AWS credentials available for bedrock-mantle SigV4")
+    url = f"https://bedrock-mantle.{region}.api.aws/openai/v1/responses"
+    payload = _json.dumps(body)
+    aws_req = AWSRequest(method="POST", url=url, data=payload, headers={"Content-Type": "application/json"})
+    SigV4Auth(creds, "bedrock-mantle", region).add_auth(aws_req)
+    headers = dict(aws_req.headers)
+    with httpx.Client(timeout=300) as client:
+        resp = client.post(url, content=payload, headers=headers)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"bedrock-mantle {resp.status_code}: {resp.text[:500]}")
+    return resp.json()
+
+
+def _responses_to_chat_completion(resp_json: dict, model_id: str) -> "ChatCompletionResponse":
+    """Convert a Responses-API response into a Chat-Completions response.
+
+    The visible assistant text lives in output[*].content[*].text where
+    output[*].type=="message". Reasoning summary (if any) lives in
+    output[*].summary[*].text where type=="reasoning".
+    """
+    text_chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    finish_reason = "stop"
+    for item in resp_json.get("output", []):
+        if item.get("type") == "message":
+            for c in item.get("content", []) or []:
+                if c.get("type") == "output_text":
+                    text_chunks.append(c.get("text", ""))
+        elif item.get("type") == "reasoning":
+            for s in item.get("summary", []) or []:
+                if isinstance(s, dict) and s.get("text"):
+                    reasoning_chunks.append(s["text"])
+                elif isinstance(s, str):
+                    reasoning_chunks.append(s)
+    content = "\n".join(text_chunks)
+    reasoning = "\n".join(reasoning_chunks) if reasoning_chunks else None
+    return ChatCompletionResponse(
+        id=resp_json.get("id", f"chatcmpl-{_uuid.uuid4()}"),
+        created=int(resp_json.get("created_at", _time.time())),
+        model=resp_json.get("model", model_id),
+        choices=[
+            ChatCompletionResponseChoice(
+                index=0,
+                message=Message(role="assistant", content=content, reasoning=reasoning),
+                finish_reason=finish_reason,
+            )
+        ],
+    )
 
 
 def create_app(region: str) -> FastAPI:
@@ -141,6 +268,14 @@ def create_app(region: str) -> FastAPI:
     @app.post("/chat/completions")
     async def chat_completions(request: ChatCompletionRequest):
         try:
+            resolved = _resolve_model(request.model or "")
+            # Bedrock Mantle (GPT-5.x) — separate code path, NOT litellm.
+            if resolved.startswith("mantle/"):
+                model_id = resolved[len("mantle/"):]
+                mantle_region = _MANTLE_REGION
+                resp_json = _mantle_request(model_id, request, mantle_region)
+                return _responses_to_chat_completion(resp_json, model_id)
+
             kw = _kwargs(request)
 
             if request.stream:

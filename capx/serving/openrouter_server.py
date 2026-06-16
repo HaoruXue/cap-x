@@ -28,6 +28,9 @@ class ContentItem(BaseModel):
 class Message(BaseModel):
     role: str
     content: str | list[ContentItem] | None = None
+    # OpenRouter surfaces the model's thinking summary here (e.g. Gemini 3.x,
+    # Claude). query_model() reads message.reasoning, so we must pass it through.
+    reasoning: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -53,6 +56,20 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: list[ChatCompletionResponseChoice]
+
+
+def _extract_reasoning(message) -> str | None:
+    """Pull the reasoning/thinking summary off an OpenAI-SDK message object.
+
+    OpenRouter returns it as a non-standard ``reasoning`` field, which the
+    OpenAI SDK stashes either as an attribute or in ``model_extra``. Returns
+    None when the model emitted no reasoning.
+    """
+    val = getattr(message, "reasoning", None)
+    if val is None:
+        extra = getattr(message, "model_extra", None) or {}
+        val = extra.get("reasoning")
+    return val or None
 
 
 def _load_api_keys(key_file: str) -> list[str]:
@@ -130,7 +147,7 @@ def create_app(api_key: str, base_url: str, async_client: bool = True) -> FastAP
                 choices = [
                     ChatCompletionResponseChoice(
                         index=c.index,
-                        message=Message(role=c.message.role, content=c.message.content),
+                        message=Message(role=c.message.role, content=c.message.content, reasoning=_extract_reasoning(c.message)),
                         finish_reason=c.finish_reason,
                     )
                     for c in response.choices
@@ -161,7 +178,7 @@ def create_app(api_key: str, base_url: str, async_client: bool = True) -> FastAP
                 choices = [
                     ChatCompletionResponseChoice(
                         index=c.index,
-                        message=Message(role=c.message.role, content=c.message.content),
+                        message=Message(role=c.message.role, content=c.message.content, reasoning=_extract_reasoning(c.message)),
                         finish_reason=c.finish_reason,
                     )
                     for c in response.choices

@@ -95,6 +95,24 @@ return 400 if non-default. The proxy strips them.
 Reference: [AWS Builder, "Claude Opus 4.7 on Amazon Bedrock — APIs,
 Features, and Migration Guide"](https://builder.aws.com/content/3Cl90CMMnqzCrkk6mXcmnGo1WTG/claude-opus-47-on-amazon-bedrock-apis-features-and-migration-guide).
 
+## OpenRouter proxy — reasoning passthrough
+
+`openrouter_server.py` forwards the model's thinking summary. OpenRouter
+returns it as a non-standard `reasoning` field on the message; the OpenAI SDK
+stashes it either as an attribute or in `model_extra`, so the proxy reads both
+via `_extract_reasoning()` and copies it onto the response `Message`.
+`query_model` (`capx/llm/client.py:277`) reads `message.reasoning` and trial.py
+persists it into `all_responses.json` per turn. Without this copy the field
+arrives empty downstream even though OpenRouter sent it.
+
+**This is a summary, not verbatim chain-of-thought.** For
+`google/gemini-3.1-pro-preview` the API returns two `reasoning_details`
+entries: a `reasoning.text` block (the paraphrased summary we capture,
+~500–4000 chars, written as tidy bolded section headers) and a
+`reasoning.encrypted` block (the actual raw thinking, encrypted by Google,
+not decodable). Same limitation as Bedrock/Opus 4.7+ — don't claim full CoT in
+downstream analyses.
+
 ## Perception servers for LIBERO tiers
 
 `FrankaLiberoApi` (S2/M*) eagerly initializes clients for SAM3, GraspNet,

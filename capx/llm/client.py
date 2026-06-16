@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 GPT_MODELS = [
+    "openai/gpt-5.5",
     "openai/gpt-5.4",
     "openai/o4-mini",
 ]
@@ -247,7 +248,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
 
     # keep calling until it works
     response = requests.post(
-        server_url, headers=headers, data=json.dumps(payload), timeout=200
+        server_url, headers=headers, data=json.dumps(payload), timeout=900
     )
     retry = 1
     while response.status_code in [404, 500, 502, 503, 504]:
@@ -255,7 +256,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
         print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
         time.sleep(sleep_time)
         response = requests.post(
-            server_url, headers=headers, data=json.dumps(payload), timeout=200
+            server_url, headers=headers, data=json.dumps(payload), timeout=900
         )
         retry += 1
 
