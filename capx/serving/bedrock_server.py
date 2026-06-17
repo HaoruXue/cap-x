@@ -249,8 +249,9 @@ def create_app(region: str) -> FastAPI:
         kw = request.model_dump(exclude_none=True)
         kw["model"] = _resolve_model(kw.get("model", ""))
         kw["aws_region_name"] = region
-        # Claude Opus 4.x on Bedrock rejects `temperature` and `top_p`.
-        if "claude-opus-4" in kw["model"]:
+        # Claude Opus 4.x AND Sonnet 4.x run in adaptive-thinking mode below,
+        # which rejects non-default `temperature`/`top_p`. Strip both.
+        if "claude-opus-4" in kw["model"] or "claude-sonnet-4" in kw["model"]:
             kw.pop("temperature", None)
             kw.pop("top_p", None)
         # Translate OpenAI-style `reasoning_effort` to Bedrock's adaptive
