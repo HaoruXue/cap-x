@@ -171,6 +171,14 @@ def _extract_code(content: str) -> list[str]:
     Returns:
         Extracted Python code list
     """
+    # Reasoning models (e.g. Qwen3.5 served via vLLM) return the chain-of-thought
+    # inline in `content`, wrapped in <think>...</think>. The chat template opens
+    # the block in the prompt, so the response often carries only the CLOSING
+    # </think>. Strip everything up to and including the last </think> so the
+    # reasoning prose is not mistaken for code.
+    if "</think>" in content:
+        content = content[content.rfind("</think>") + len("</think>"):]
+
     fence_start = "```python\n"
     fence_end = "```"
     start_idx = 0
